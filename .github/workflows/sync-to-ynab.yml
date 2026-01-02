@@ -28,6 +28,11 @@ jobs:
       ACCOUNT_2_YNAB_BUDGET_ID: ${{ secrets.ACCOUNT_2_YNAB_BUDGET_ID }}
       ACCOUNT_2_YNAB_ID: ${{ secrets.ACCOUNT_2_YNAB_ID }}
 
+      ACCOUNT_3_NAME: ${{ vars.ACCOUNT_3_NAME }}
+      ACCOUNT_3_PLUGGY_ID: ${{ secrets.ACCOUNT_3_PLUGGY_ID }}
+      ACCOUNT_3_YNAB_BUDGET_ID: ${{ secrets.ACCOUNT_3_YNAB_BUDGET_ID }}
+      ACCOUNT_3_YNAB_ID: ${{ secrets.ACCOUNT_3_YNAB_ID }}
+
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
