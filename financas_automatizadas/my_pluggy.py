@@ -84,7 +84,10 @@ def normalize_transactions(pluggy_transactions) -> [Transaction]:
 def get_transactions(account_id: str, api_key: str) -> list[ANY]:
     account_transactions_url = f"{PLUGGY_URL}transactions"
     today = date.today()
-    a_week_ago = today - timedelta(days=7)
+
+    # Using 6 days instead of 7 because of OpenFinance rate limits:
+    # https://docs.pluggy.ai/docs/rate-limits-of
+    a_week_ago = today - timedelta(days=6)
 
     response = requests.get(
         url=f"{account_transactions_url}",
