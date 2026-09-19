@@ -15,6 +15,10 @@ TRANSACTION_LOOKBACK_DAYS = 6
 # it for transactions still succeeds and simply returns nothing.
 MAX_CONNECTION_STALENESS_DAYS = 3
 
+# How many transactions a single request asks Pluggy for. This sync only ever
+# reads the first page, so anything beyond this in one window would be dropped.
+TRANSACTION_PAGE_SIZE = 50
+
 # Open Finance consents expire, and when one does the connection goes dark
 # silently. Warn while there is still time to renew it, but keep the window
 # short so the warning stays urgent instead of becoming background noise.
@@ -56,7 +60,7 @@ def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
             "from": lookback_start_date.strftime("%Y-%m-%d"),
             "to": today.strftime("%Y-%m-%d"),
             "page": 1,
-            "pageSize": 50,
+            "pageSize": TRANSACTION_PAGE_SIZE,
         },
         headers={
             "accept": "application/json",
@@ -67,6 +71,19 @@ def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
         response,
         f"fetching transactions for account '{account_id}'",
     )
+
+    # Silently dropping the overflow is precisely the kind of quiet
+    # under-reporting this sync exists to stop doing, so refuse the run instead.
+    # This matters most during a wide-window backfill, where a single window can
+    # hold far more than one page.
+    total_pages = data.get("totalPages", 1)
+    if total_pages > 1:
+        raise RuntimeError(
+            f"Pluggy has {total_pages} pages of transactions in this window, but "
+            f"this sync only reads the first {TRANSACTION_PAGE_SIZE}. Some "
+            "transactions would be missed, so the run is being failed instead of "
+            "silently under-reporting. Narrow the date window, or add pagination."
+        )
 
     return normalize_transactions(data["results"])
 
