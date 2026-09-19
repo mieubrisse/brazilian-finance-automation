@@ -1,67 +1,121 @@
-from datetime import timedelta, date, datetime
-from unittest.mock import ANY
+from datetime import date, datetime, timedelta, timezone
 
 import requests
-from decouple import config
-import json
 
-
-from schemas import Transaction
+from schemas import ConnectionHealth, ConnectionProblem, ProblemSeverity, Transaction
 
 PLUGGY_URL = "https://api.pluggy.ai/"
-PLUGGY_CLIENT_ID = config("PLUGGY_CLIENT_ID")
-PLUGGY_CLIENT_SECRET = config("PLUGGY_CLIENT_SECRET")
+
+# Using 6 days instead of 7 because of OpenFinance rate limits:
+# https://docs.pluggy.ai/docs/rate-limits-of
+TRANSACTION_LOOKBACK_DAYS = 6
+
+# Pluggy re-syncs a healthy connection daily, so a connection that has not
+# completed a sync in this long has stopped feeding us data, even though asking
+# it for transactions still succeeds and simply returns nothing.
+MAX_CONNECTION_STALENESS_DAYS = 3
+
+# Open Finance consents expire, and when one does the connection goes dark
+# silently. Warn while there is still time to renew it, but keep the window
+# short so the warning stays urgent instead of becoming background noise.
+CONSENT_EXPIRY_WARNING_DAYS = 14
 
 
 def get_api_key(client_id: str, client_secret: str) -> str:
-    pluggy_auth_url = f"{PLUGGY_URL}auth"
-    payload = {
-        "clientId": client_id,
-        "clientSecret": client_secret,
-    }
-
-    headers = {
-        "accept": "application/json",
-        "content-type": "application/json",
-    }
-
     response = requests.post(
-        pluggy_auth_url,
-        json=payload,
-        headers=headers,
+        f"{PLUGGY_URL}auth",
+        json={
+            "clientId": client_id,
+            "clientSecret": client_secret,
+        },
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+        },
     )
-    data = response.json()
-    api_key = data["apiKey"]
+    data = _get_json_or_raise(response, "authenticating with Pluggy")
+
+    api_key = data.get("apiKey")
+    if api_key is None:
+        raise RuntimeError(
+            "Pluggy's authentication response did not contain an API key. "
+            f"Response body: '{response.text}'"
+        )
 
     return api_key
 
 
-headers_with_api_key = {
-    "accept": "application/json",
-    "X-API-KEY": get_api_key(
-        client_id=PLUGGY_CLIENT_ID,
-        client_secret=PLUGGY_CLIENT_SECRET,
-    ),
-}
+def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
+    today = date.today()
+    lookback_start_date = today - timedelta(days=TRANSACTION_LOOKBACK_DAYS)
+
+    response = requests.get(
+        url=f"{PLUGGY_URL}transactions",
+        params={
+            "accountId": account_id,
+            "from": lookback_start_date.strftime("%Y-%m-%d"),
+            "to": today.strftime("%Y-%m-%d"),
+            "page": 1,
+            "pageSize": 50,
+        },
+        headers={
+            "accept": "application/json",
+            "X-API-KEY": api_key,
+        },
+    )
+    data = _get_json_or_raise(
+        response,
+        f"fetching transactions for account '{account_id}'",
+    )
+
+    return normalize_transactions(data["results"])
 
 
-# get account/credit card transactions
-def normalize_transactions(pluggy_transactions) -> [Transaction]:
+def check_connection_health(account_id: str, api_key: str) -> ConnectionHealth:
+    """
+    Inspects the Pluggy connection behind an account.
+
+    Asking Pluggy for transactions succeeds even when the underlying bank
+    connection has died -- it just returns an empty list, which is
+    indistinguishable from a quiet week. This looks at the connection itself so
+    that a dead connection can be reported as the failure it is.
+    """
+    account = _fetch_account(account_id, api_key)
+    item = _fetch_item(account["itemId"], api_key)
+
+    now = datetime.now(timezone.utc)
+    last_updated_at = _parse_optional_timestamp(item.get("lastUpdatedAt"))
+    consent_expires_at = _parse_optional_timestamp(item.get("consentExpiresAt"))
+
+    problems = []
+    problems.extend(_find_staleness_problems(last_updated_at, item, now))
+    problems.extend(_find_consent_problems(consent_expires_at, now))
+
+    return ConnectionHealth(
+        status=item.get("status", "UNKNOWN"),
+        execution_status=item.get("executionStatus", "UNKNOWN"),
+        last_updated_at=last_updated_at,
+        consent_expires_at=consent_expires_at,
+        problems=problems,
+    )
+
+
+def normalize_transactions(pluggy_transactions) -> list[Transaction]:
     normalized_transactions = []
 
     for transaction in pluggy_transactions:
 
         description = transaction["description"].strip()
         description_parts = description.split("|")
-        payee=None
+        payee = None
         if len(description_parts) >= 2:
             # The majority of transaction descriptions are like this:
             # Transferência enviada|JUAN CARLOS
-            payee=description_parts[1]
+            payee = description_parts[1]
         else:
             # Other times (maybe with autopay?) we get descriptions like this:
             # VIVO (MÓVEL + COMBOS)
-            payee=description
+            payee = description
 
         new_transaction = Transaction(
             external_id=transaction["id"],
@@ -81,27 +135,115 @@ def normalize_transactions(pluggy_transactions) -> [Transaction]:
     return normalized_transactions
 
 
-def get_transactions(account_id: str, api_key: str) -> list[ANY]:
-    account_transactions_url = f"{PLUGGY_URL}transactions"
-    today = date.today()
+def _find_staleness_problems(
+    last_updated_at: datetime | None,
+    item: dict,
+    now: datetime,
+) -> list[ConnectionProblem]:
+    if last_updated_at is None:
+        return [
+            ConnectionProblem(
+                severity=ProblemSeverity.BROKEN,
+                description=(
+                    "The bank connection has never completed a sync, so no "
+                    "transactions will ever arrive."
+                ),
+            )
+        ]
 
-    # Using 6 days instead of 7 because of OpenFinance rate limits:
-    # https://docs.pluggy.ai/docs/rate-limits-of
-    a_week_ago = today - timedelta(days=6)
+    staleness = now - last_updated_at
+    if staleness <= timedelta(days=MAX_CONNECTION_STALENESS_DAYS):
+        return []
 
+    problem = (
+        f"The bank connection last synced {staleness.days} days ago (at "
+        f"'{last_updated_at.isoformat()}'), so new transactions are no longer "
+        f"reaching Pluggy. Pluggy reports connection status "
+        f"'{item.get('status')}' and execution status "
+        f"'{item.get('executionStatus')}'."
+    )
+
+    connection_error = item.get("error")
+    if connection_error:
+        problem += f" Pluggy also reports an error: '{connection_error}'."
+
+    return [
+        ConnectionProblem(severity=ProblemSeverity.BROKEN, description=problem)
+    ]
+
+
+def _find_consent_problems(
+    consent_expires_at: datetime | None,
+    now: datetime,
+) -> list[ConnectionProblem]:
+    # Connectors that don't go through Open Finance have no consent to expire.
+    if consent_expires_at is None:
+        return []
+
+    time_until_expiry = consent_expires_at - now
+
+    if time_until_expiry <= timedelta(0):
+        return [
+            ConnectionProblem(
+                severity=ProblemSeverity.BROKEN,
+                description=(
+                    "The Open Finance consent expired at "
+                    f"'{consent_expires_at.isoformat()}'. The bank must be "
+                    "reconnected in the Pluggy dashboard before any "
+                    "transactions can sync again."
+                ),
+            )
+        ]
+
+    if time_until_expiry <= timedelta(days=CONSENT_EXPIRY_WARNING_DAYS):
+        return [
+            ConnectionProblem(
+                severity=ProblemSeverity.WARNING,
+                description=(
+                    f"The Open Finance consent expires in "
+                    f"{time_until_expiry.days} days (at "
+                    f"'{consent_expires_at.isoformat()}'). Renew it in the "
+                    "Pluggy dashboard before it lapses, or the sync will go "
+                    "silent."
+                ),
+            )
+        ]
+
+    return []
+
+
+def _fetch_account(account_id: str, api_key: str) -> dict:
     response = requests.get(
-        url=f"{account_transactions_url}",
-        params={
-            "accountId": account_id,
-            "from": a_week_ago.strftime("%Y-%m-%d"),
-            "to": today.strftime("%Y-%m-%d"),
-            "page": 1,
-            "pageSize": 50,
-        },
+        url=f"{PLUGGY_URL}accounts/{account_id}",
         headers={
             "accept": "application/json",
             "X-API-KEY": api_key,
         },
     )
-    transactions = normalize_transactions(response.json()["results"])
-    return transactions
+    return _get_json_or_raise(response, f"fetching account '{account_id}'")
+
+
+def _fetch_item(item_id: str, api_key: str) -> dict:
+    response = requests.get(
+        url=f"{PLUGGY_URL}items/{item_id}",
+        headers={
+            "accept": "application/json",
+            "X-API-KEY": api_key,
+        },
+    )
+    return _get_json_or_raise(response, f"fetching bank connection '{item_id}'")
+
+
+def _parse_optional_timestamp(raw_timestamp: str | None) -> datetime | None:
+    if raw_timestamp is None:
+        return None
+    return datetime.fromisoformat(raw_timestamp.replace("Z", "+00:00"))
+
+
+def _get_json_or_raise(response: requests.Response, description: str) -> dict:
+    if not response.ok:
+        raise RuntimeError(
+            f"Pluggy returned HTTP {response.status_code} when {description}. "
+            f"Response body: '{response.text}'"
+        )
+    return response.json()
