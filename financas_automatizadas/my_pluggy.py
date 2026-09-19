@@ -10,10 +10,17 @@ PLUGGY_URL = "https://api.pluggy.ai/"
 # https://docs.pluggy.ai/docs/rate-limits-of
 TRANSACTION_LOOKBACK_DAYS = 6
 
-# Pluggy re-syncs a healthy connection daily, so a connection that has not
-# completed a sync in this long has stopped feeding us data, even though asking
-# it for transactions still succeeds and simply returns nothing.
-MAX_CONNECTION_STALENESS_DAYS = 3
+# DISABLED, deliberately. This was meant to catch a connection that had quietly
+# stopped feeding us data. It is not safe to fail on, because Pluggy's
+# `lastUpdatedAt` appears to track when the item record was last edited rather
+# than when its bank data last refreshed -- Kevin's reading, and consistent with
+# two of his items reporting timestamps months old while the sync was working.
+# Failing on it would have produced a daily false alarm, and an alarm that cries
+# wolf is worse than no alarm at all: it trains you to ignore the real one.
+#
+# The value is still printed on every run, so the signal is not lost -- only the
+# failure. Re-enable by restoring it to _find_connection_problems once Pluggy
+# confirms what the field actually measures.
 
 # How many transactions a single request asks Pluggy for. This sync only ever
 # reads the first page, so anything beyond this in one window would be dropped.
@@ -105,7 +112,7 @@ def check_connection_health(account_id: str, api_key: str) -> ConnectionHealth:
     consent_expires_at = _parse_optional_timestamp(item.get("consentExpiresAt"))
 
     problems = []
-    problems.extend(_find_staleness_problems(last_updated_at, item, now))
+    problems.extend(_find_reported_error_problems(item))
     problems.extend(_find_consent_problems(consent_expires_at, now))
 
     return ConnectionHealth(
@@ -152,40 +159,29 @@ def normalize_transactions(pluggy_transactions) -> list[Transaction]:
     return normalized_transactions
 
 
-def _find_staleness_problems(
-    last_updated_at: datetime | None,
-    item: dict,
-    now: datetime,
-) -> list[ConnectionProblem]:
-    if last_updated_at is None:
-        return [
-            ConnectionProblem(
-                severity=ProblemSeverity.BROKEN,
-                description=(
-                    "The bank connection has never completed a sync, so no "
-                    "transactions will ever arrive."
-                ),
-            )
-        ]
+def _find_reported_error_problems(item: dict) -> list[ConnectionProblem]:
+    """
+    Surfaces an error Pluggy is already reporting about the connection.
 
-    staleness = now - last_updated_at
-    if staleness <= timedelta(days=MAX_CONNECTION_STALENESS_DAYS):
+    Deliberately keyed off the `error` field rather than off `status`. A healthy
+    status proves nothing -- an item serving no data at all still reports
+    `UPDATED` / `SUCCESS` -- but a populated error means Pluggy itself is saying
+    something went wrong, which does not need interpreting.
+    """
+    reported_error = item.get("error")
+    if not reported_error:
         return []
 
-    problem = (
-        f"The bank connection last synced {staleness.days} days ago (at "
-        f"'{last_updated_at.isoformat()}'), so new transactions are no longer "
-        f"reaching Pluggy. Pluggy reports connection status "
-        f"'{item.get('status')}' and execution status "
-        f"'{item.get('executionStatus')}'."
-    )
-
-    connection_error = item.get("error")
-    if connection_error:
-        problem += f" Pluggy also reports an error: '{connection_error}'."
-
     return [
-        ConnectionProblem(severity=ProblemSeverity.BROKEN, description=problem)
+        ConnectionProblem(
+            severity=ProblemSeverity.BROKEN,
+            description=(
+                f"Pluggy reports an error on this bank connection: "
+                f"'{reported_error}'. Connection status is "
+                f"'{item.get('status')}' and execution status is "
+                f"'{item.get('executionStatus')}'."
+            ),
+        )
     ]
 
 
