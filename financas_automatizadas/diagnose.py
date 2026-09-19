@@ -36,7 +36,9 @@ def main() -> None:
         )
         sys.exit(1)
 
-    item_ids = [item_id.strip() for item_id in raw_item_ids.split(",") if item_id.strip()]
+    item_ids = [
+        item_id.strip() for item_id in raw_item_ids.split(",") if item_id.strip()
+    ]
 
     print("Authenticating with Pluggy...")
     api_key = get_api_key(
