@@ -220,6 +220,20 @@ def _fetch_account(account_id: str, api_key: str) -> dict:
             "X-API-KEY": api_key,
         },
     )
+
+    # Worth calling out specifically, because asking for TRANSACTIONS belonging
+    # to an account ID that no longer exists returns an empty list and HTTP 200,
+    # which is how this failure stayed invisible for months.
+    if response.status_code == requests.codes.not_found:
+        raise RuntimeError(
+            "Pluggy has no account with the configured ID. The bank connection "
+            "behind it was deleted or recreated, and recreating a connection "
+            "mints brand new account IDs. Reconnect the bank at "
+            "https://dashboard.pluggy.ai AND THEN update the matching "
+            "ACCOUNT_<n>_PLUGGY_ID repository secret -- reconnecting on its own "
+            "will NOT fix this."
+        )
+
     return _get_json_or_raise(response, f"fetching account '{account_id}'")
 
 
