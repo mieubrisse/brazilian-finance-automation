@@ -1,0 +1,32 @@
+name: Diagnose what the Pluggy credentials can see
+
+# Run by hand when the sync reports that an account id no longer resolves.
+# Pluggy has no endpoint that lists items, so the item ids have to be read off
+# the Items list of the application at https://dashboard.pluggy.ai and passed in.
+on:
+  workflow_dispatch:
+    inputs:
+      item_ids:
+        description: Comma-separated Pluggy item ids, from the dashboard
+        required: true
+        type: string
+
+jobs:
+  diagnose:
+    env:
+      PLUGGY_CLIENT_ID: ${{ secrets.PLUGGY_CLIENT_ID }}
+      PLUGGY_CLIENT_SECRET: ${{ secrets.PLUGGY_CLIENT_SECRET }}
+      ITEM_IDS: ${{ inputs.item_ids }}
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v3
+      - name: Install Python
+        run: uv python install
+      - name: Report what these credentials can see
+        run: uv run python financas_automatizadas/diagnose.py
