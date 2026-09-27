@@ -1,6 +1,16 @@
 name: Sync accounts to YNAB(You Need A Budget) every day at 6AM
 on:
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      lookback_days:
+        description: >-
+          Days to look back. Leave blank for the daily default of 6. Anything
+          above 6 reaches past Open Finance's "recent" window and spends ONE of
+          only FOUR non-recent requests allowed per product per calendar month;
+          exhausting them stops the bank syncing until next month. Set this
+          wide enough to cover the whole gap in a single run.
+        required: false
+        type: string
   schedule:
     - cron: 0 6 * * *  # Every day at 6AM
   push:
@@ -12,6 +22,9 @@ jobs:
       YNAB_TOKEN: ${{ secrets.YNAB_TOKEN }}
       PLUGGY_CLIENT_ID: ${{ secrets.PLUGGY_CLIENT_ID }}
       PLUGGY_CLIENT_SECRET: ${{ secrets.PLUGGY_CLIENT_SECRET }}
+
+      # Empty on scheduled runs, which the script reads as "use the default".
+      LOOKBACK_DAYS: ${{ inputs.lookback_days }}
 
       ACCOUNT_0_NAME: ${{ vars.ACCOUNT_0_NAME }}
       ACCOUNT_0_PLUGGY_ID: ${{ secrets.ACCOUNT_0_PLUGGY_ID }}

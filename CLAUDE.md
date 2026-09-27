@@ -56,13 +56,21 @@ line ran older code and proves nothing.
 
 **2. A Pluggy Item reports itself healthy while holding nothing.** An Item can
 return `status: UPDATED`, `executionStatus: SUCCESS` and `error: None` while
-containing zero accounts and serving no data. Do not treat those fields as
-evidence that data is flowing. `lastUpdatedAt` also appears to track when the
-Item record was last modified rather than when its bank data last refreshed, so
-it is not a freshness signal either.
+containing zero accounts and serving no data. Those fields describe how the last
+execution went, not whether the data is current, so they are not evidence that
+anything is flowing.
 
-The question that actually discriminates: **can the configured account ids still
-be fetched?**
+Two fields that *are* worth trusting, and the sync now fails on both:
+
+- **`lastUpdatedAt` does track data collection.** Through the outage both Items
+  sat frozen at timestamps months old; since it was fixed, both advance daily. A
+  frozen `lastUpdatedAt` is the earliest available signal that data has stopped
+  arriving, and would have caught the outage within days rather than ten weeks.
+- **`error`** being populated means Pluggy itself is reporting a fault, which
+  needs no interpretation.
+
+The question that discriminates hardest, though: **can the configured account ids
+still be fetched?** A 404 there is unambiguous.
 
 Diagnosing
 ----------
@@ -88,14 +96,60 @@ That reports, per Item, whether these credentials can see it, its status and
 timestamps, and every account under it. Account ids are printed abbreviated
 because this repository is public and its Action logs are world-readable.
 
-Recovery does not backfill
---------------------------
+Backfilling, and the rate limit that governs it
+-----------------------------------------------
 
-The sync only ever asks for a short trailing window (`TRANSACTION_LOOKBACK_DAYS`
-in `financas_automatizadas/my_pluggy.py`). Anything that fell outside that window
-while the pipeline was broken **will never arrive on its own**. Fixing the
-pipeline fixes the future, not the gap; closing a gap takes a deliberate
-wide-window run.
+The sync only ever asks for a short trailing window. Anything that fell outside
+that window while the pipeline was broken **will never arrive on its own**.
+Fixing the pipeline fixes the future, not the gap.
+
+**Read this before widening the window. Getting it wrong takes the sync down for
+the rest of the calendar month.**
+
+Open Finance prices transaction requests by how far back they reach, and the
+cliff is severe ([rate limits](https://docs.pluggy.ai/docs/rate-limits-of)):
+
+| Window reaches back | Classed as | Allowance |
+|---|---|---|
+| 1–6 days | recent | **240** requests/month |
+| 7–365 days | non-recent | **4** requests/month |
+
+The allowance is per product, per institution, per calendar month. Exceeding it
+does not merely fail the request: the product drops to `PARTIAL_SUCCESS` with
+"Open Finance monthly rate limit reached", and **that bank stops syncing until
+the next calendar month**.
+
+Two consequences shape how a backfill must be done:
+
+1. **Make one wide request, not many narrow ones.** Chunking a ten-week gap into
+   weekly requests would burn the entire monthly allowance several times over.
+   `TRANSACTION_PAGE_SIZE` is set to Pluggy's maximum of 500 precisely so a
+   single request covers a wide window. Request *count* is the scarce resource
+   here, not response size.
+2. **There is no free dry run.** Previewing costs the same rationed request as
+   doing it, so rehearsing is not cheaper than acting. What makes a single live
+   pass safe instead is `import_id`: YNAB rejects anything already imported with
+   a 409, so an over-wide window is harmless as long as the Pluggy connection has
+   not been remade (see the duplicates section).
+
+To backfill, dispatch the normal sync with a wider lookback:
+
+```
+gh workflow run sync-to-ynab.yml \
+  -R mieubrisse/brazilian-finance-automation \
+  --ref kevin-main \
+  -f lookback_days=<days>
+```
+
+The run announces the window it is about to request and prints a loud warning
+when it reaches past the recent boundary, so the log records that a rationed
+request was spent. Scheduled runs leave the input blank and fall back to the
+6-day default.
+
+Pick the number of days to land just after the last transaction already in the
+budget. Do not pad it generously "to be safe" — padding buys nothing (`import_id`
+already covers overlap) and reaching further back cannot be undone once the
+request is spent.
 
 Duplicates, and when protection disappears
 ------------------------------------------

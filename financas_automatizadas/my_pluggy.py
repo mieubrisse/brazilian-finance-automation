@@ -1,14 +1,50 @@
 from datetime import date, datetime, timedelta, timezone
 
 import requests
+from decouple import config
 
 from schemas import ConnectionHealth, ConnectionProblem, ProblemSeverity, Transaction
 
 PLUGGY_URL = "https://api.pluggy.ai/"
 
-# Using 6 days instead of 7 because of OpenFinance rate limits:
-# https://docs.pluggy.ai/docs/rate-limits-of
-TRANSACTION_LOOKBACK_DAYS = 6
+# Open Finance prices transaction requests by how far back they reach, and the
+# cliff is brutal: a window reaching 1-6 days back is "recent" and allows 240
+# requests a month, while anything reaching 7-365 days back is "non-recent" and
+# allows FOUR A MONTH, per product per institution. Blowing that budget does not
+# merely fail the request -- the product drops to PARTIAL_SUCCESS and stops
+# syncing until the next calendar month.
+#   https://docs.pluggy.ai/docs/rate-limits-of
+#
+# So the daily sync stays inside the recent window, and reaching further back is
+# a deliberate, rationed act. See LOOKBACK_DAYS below.
+RECENT_WINDOW_MAX_DAYS = 6
+DEFAULT_LOOKBACK_DAYS = RECENT_WINDOW_MAX_DAYS
+
+# Pluggy's maximum, and its default. Worth using in full: it means one request
+# covers a wide backfill window instead of many paged requests, and with
+# non-recent requests rationed to four a month, request count is the scarce
+# resource -- not bandwidth.
+TRANSACTION_PAGE_SIZE = 500
+
+# A connection that has not refreshed in this long has stopped feeding us data.
+#
+# History, because this was disabled once and the reversal matters: Kevin's read
+# was that `lastUpdatedAt` tracks manual edits to the item rather than data
+# refresh, which would have made this a daily false alarm, so it was removed.
+# Evidence since says otherwise. Through the outage both items sat frozen at
+# timestamps months old; since Pluggy fixed their side, both advance every single
+# day. So the field does track collection, and this check would have caught the
+# outage within days of it starting instead of ten weeks later.
+MAX_CONNECTION_STALENESS_DAYS = 3
+
+RECENT_WINDOW_MAX_DAYS = 6
+DEFAULT_LOOKBACK_DAYS = RECENT_WINDOW_MAX_DAYS
+
+# Pluggy's maximum, and its default. Worth using in full: it means one request
+# covers a wide backfill window instead of many paged requests, and with
+# non-recent requests rationed to four a month, request count is the scarce
+# resource -- not bandwidth.
+TRANSACTION_PAGE_SIZE = 500
 
 # DISABLED, deliberately. This was meant to catch a connection that had quietly
 # stopped feeding us data. It is not safe to fail on, because Pluggy's
@@ -21,10 +57,6 @@ TRANSACTION_LOOKBACK_DAYS = 6
 # The value is still printed on every run, so the signal is not lost -- only the
 # failure. Re-enable by restoring it to _find_connection_problems once Pluggy
 # confirms what the field actually measures.
-
-# How many transactions a single request asks Pluggy for. This sync only ever
-# reads the first page, so anything beyond this in one window would be dropped.
-TRANSACTION_PAGE_SIZE = 50
 
 # Open Finance consents expire, and when one does the connection goes dark
 # silently. Warn while there is still time to renew it, but keep the window
@@ -56,9 +88,28 @@ def get_api_key(client_id: str, client_secret: str) -> str:
     return api_key
 
 
+def get_lookback_days() -> int:
+    """
+    How many days back to ask for, default `DEFAULT_LOOKBACK_DAYS`.
+
+    Override with the LOOKBACK_DAYS environment variable to backfill a gap. Any
+    value above `RECENT_WINDOW_MAX_DAYS` spends one of the four non-recent Open
+    Finance requests allowed per product per month, so raise it deliberately and
+    in one pass rather than repeatedly.
+    """
+    # Read as a string and check for emptiness before casting. A GitHub Actions
+    # workflow with an optional input sets the variable to "" on a scheduled run
+    # rather than leaving it unset, and casting "" straight to int would crash
+    # the daily sync every morning.
+    raw_lookback_days = str(config("LOOKBACK_DAYS", default="")).strip()
+    if not raw_lookback_days:
+        return DEFAULT_LOOKBACK_DAYS
+    return int(raw_lookback_days)
+
+
 def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
     today = date.today()
-    lookback_start_date = today - timedelta(days=TRANSACTION_LOOKBACK_DAYS)
+    lookback_start_date = today - timedelta(days=get_lookback_days())
 
     response = requests.get(
         url=f"{PLUGGY_URL}transactions",
@@ -89,7 +140,9 @@ def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
             f"Pluggy has {total_pages} pages of transactions in this window, but "
             f"this sync only reads the first {TRANSACTION_PAGE_SIZE}. Some "
             "transactions would be missed, so the run is being failed instead of "
-            "silently under-reporting. Narrow the date window, or add pagination."
+            "silently under-reporting. Narrow the window rather than paging: "
+            "reaching past the recent window is rationed to four requests a "
+            "month per product."
         )
 
     return normalize_transactions(data["results"])
@@ -113,6 +166,7 @@ def check_connection_health(account_id: str, api_key: str) -> ConnectionHealth:
 
     problems = []
     problems.extend(_find_reported_error_problems(item))
+    problems.extend(_find_staleness_problems(last_updated_at, item, now))
     problems.extend(_find_consent_problems(consent_expires_at, now))
 
     return ConnectionHealth(
@@ -157,6 +211,41 @@ def normalize_transactions(pluggy_transactions) -> list[Transaction]:
         normalized_transactions.append(new_transaction)
 
     return normalized_transactions
+
+
+def _find_staleness_problems(
+    last_updated_at: datetime | None,
+    item: dict,
+    now: datetime,
+) -> list[ConnectionProblem]:
+    if last_updated_at is None:
+        return [
+            ConnectionProblem(
+                severity=ProblemSeverity.BROKEN,
+                description=(
+                    "The bank connection has never completed a sync, so no "
+                    "transactions will ever arrive."
+                ),
+            )
+        ]
+
+    staleness = now - last_updated_at
+    if staleness <= timedelta(days=MAX_CONNECTION_STALENESS_DAYS):
+        return []
+
+    return [
+        ConnectionProblem(
+            severity=ProblemSeverity.BROKEN,
+            description=(
+                f"The bank connection last refreshed {staleness.days} days ago "
+                f"(at '{last_updated_at.isoformat()}'), so new transactions are "
+                f"not reaching Pluggy. It reports status '{item.get('status')}' "
+                f"and execution status '{item.get('executionStatus')}', which is "
+                "not a contradiction: those fields describe the last execution, "
+                "not whether data is current."
+            ),
+        )
+    ]
 
 
 def _find_reported_error_problems(item: dict) -> list[ConnectionProblem]:

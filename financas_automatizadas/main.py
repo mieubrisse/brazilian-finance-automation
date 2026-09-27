@@ -2,9 +2,10 @@ from decouple import config
 
 import ynab
 from my_pluggy import (
-    TRANSACTION_LOOKBACK_DAYS,
+    RECENT_WINDOW_MAX_DAYS,
     check_connection_health,
     get_api_key,
+    get_lookback_days,
     get_transactions,
 )
 from schemas import (
@@ -86,6 +87,8 @@ def main() -> None:
     total_already_imported = 0
     problems_by_account_name = {}
 
+    announce_window()
+
     print("Syncing...")
     print("")
     for account in bank_accounts:
@@ -136,6 +139,32 @@ def main() -> None:
 
     if problems_by_account_name:
         report_problems_and_exit(problems_by_account_name)
+
+def announce_window() -> None:
+    """
+    States the window being requested, and whether it costs a rationed request.
+
+    Worth shouting about: a window reaching past the recent boundary spends one
+    of only four non-recent Open Finance requests allowed per product per month,
+    and exhausting them stops the bank syncing until the next calendar month. A
+    run that quietly did that would be a nasty surprise.
+    """
+    lookback_days = get_lookback_days()
+    print(f"Looking back {lookback_days} days.")
+
+    if lookback_days <= RECENT_WINDOW_MAX_DAYS:
+        return
+
+    print("")
+    print(
+        f"⚠️  BACKFILL MODE: {lookback_days} days reaches past the {RECENT_WINDOW_MAX_DAYS}-day "
+        "recent window, so this run spends ONE of the four non-recent Open "
+        "Finance requests allowed per product per calendar month. Exhaust them "
+        "and the bank stops syncing until next month. Do not re-run this "
+        "casually."
+    )
+    print("")
+
 
 def sync_account(
     pluggy_account_id: str,
@@ -208,9 +237,10 @@ def report_problems_and_exit(problems_by_account_name: dict) -> None:
     if is_anything_broken:
         print("")
         print(
-            f"NOTE: this sync only looks back {TRANSACTION_LOOKBACK_DAYS} days, "
-            "so anything missed while it was broken will NOT arrive on its own "
-            "and needs a deliberate backfill."
+            f"NOTE: this sync only looks back {get_lookback_days()} days, so "
+            "anything missed while it was broken will NOT arrive on its own and "
+            "needs a deliberate backfill -- re-run with LOOKBACK_DAYS set wide "
+            "enough to cover the gap."
         )
 
     sys.exit(1)
