@@ -28,6 +28,23 @@ TRANSACTION_PAGE_SIZE = 500
 
 # A connection that has not refreshed in this long has stopped feeding us data.
 #
+# Two days rather than three, because detection latency eats the only cheap
+# recovery there is: a gap can be backfilled for free inside the 6-day recent
+# window, and past it a backfill spends one of just four non-recent requests a
+# month. Nubank's October outage spent three of those six days on detection
+# alone -- it froze on the 12th, and the runs of the 13th (1.2 days stale) and
+# the 14th (2.2 days) both passed before the 15th caught it at 3.6 days (the
+# alarm prints whole days, so that run's log says 3). Two buys one of those
+# days back: the run of the 14th would have failed.
+#
+# Two rather than one, because a false alarm here is worse than a late one, as
+# the history below records. A healthy connection refreshes daily, leaving
+# Nubank about 5 hours stale at the 06:12Z run time and Itau about 10, so one
+# skipped collection puts Itau at 1.4 days -- 14 hours short of tripping this.
+# What eats that margin is not the refresh cadence but GitHub: it started the
+# run of the 15th 10 hours late, and that delay over a skipped collection would
+# leave about 4 hours. Enough, but not generous, and one day would have none.
+#
 # History, because this was disabled once and the reversal matters: Kevin's read
 # was that `lastUpdatedAt` tracks manual edits to the item rather than data
 # refresh, which would have made this a daily false alarm, so it was removed.
@@ -35,7 +52,7 @@ TRANSACTION_PAGE_SIZE = 500
 # timestamps months old; since Pluggy fixed their side, both advance every single
 # day. So the field does track collection, and this check would have caught the
 # outage within days of it starting instead of ten weeks later.
-MAX_CONNECTION_STALENESS_DAYS = 3
+MAX_CONNECTION_STALENESS_DAYS = 2
 
 RECENT_WINDOW_MAX_DAYS = 6
 DEFAULT_LOOKBACK_DAYS = RECENT_WINDOW_MAX_DAYS
@@ -45,18 +62,6 @@ DEFAULT_LOOKBACK_DAYS = RECENT_WINDOW_MAX_DAYS
 # non-recent requests rationed to four a month, request count is the scarce
 # resource -- not bandwidth.
 TRANSACTION_PAGE_SIZE = 500
-
-# DISABLED, deliberately. This was meant to catch a connection that had quietly
-# stopped feeding us data. It is not safe to fail on, because Pluggy's
-# `lastUpdatedAt` appears to track when the item record was last edited rather
-# than when its bank data last refreshed -- Kevin's reading, and consistent with
-# two of his items reporting timestamps months old while the sync was working.
-# Failing on it would have produced a daily false alarm, and an alarm that cries
-# wolf is worse than no alarm at all: it trains you to ignore the real one.
-#
-# The value is still printed on every run, so the signal is not lost -- only the
-# failure. Re-enable by restoring it to _find_connection_problems once Pluggy
-# confirms what the field actually measures.
 
 # Open Finance consents expire, and when one does the connection goes dark
 # silently. Warn while there is still time to renew it, but keep the window
