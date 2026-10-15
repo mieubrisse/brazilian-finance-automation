@@ -54,15 +54,6 @@ TRANSACTION_PAGE_SIZE = 500
 # outage within days of it starting instead of ten weeks later.
 MAX_CONNECTION_STALENESS_DAYS = 2
 
-RECENT_WINDOW_MAX_DAYS = 6
-DEFAULT_LOOKBACK_DAYS = RECENT_WINDOW_MAX_DAYS
-
-# Pluggy's maximum, and its default. Worth using in full: it means one request
-# covers a wide backfill window instead of many paged requests, and with
-# non-recent requests rationed to four a month, request count is the scarce
-# resource -- not bandwidth.
-TRANSACTION_PAGE_SIZE = 500
-
 # Open Finance consents expire, and when one does the connection goes dark
 # silently. Warn while there is still time to renew it, but keep the window
 # short so the warning stays urgent instead of becoming background noise.
