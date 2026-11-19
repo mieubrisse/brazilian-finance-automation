@@ -27,6 +27,9 @@ packages = ["src/financas_automatizadas"]
 python_files = ["test_*.py", "*_tests.py"]
 addopts = "-vv --cov=financas_automatizadas --durations=5 --disable-warnings"
 testpaths = ["tests"]
+# The application imports its modules flat (`import ynab`), because the workflow
+# runs `financas_automatizadas/main.py` as a script. Tests import them the same way.
+pythonpath = ["financas_automatizadas"]
 console_output_style = "progress"
 
 [tool.ruff]
@@ -34,8 +37,8 @@ select = ["E", "F", "I"]
 ignore = []
 line-length = 88
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "freezegun>=1.5.1",
     "ipdb>=0.13.13",
     "pytest>=8.3.3",

@@ -9,7 +9,6 @@
 - Account
   - NICE_TO_HAVE: Send all transactions at once ynab.send_account_transaction
 - NICE_TO_HAVE: Add mypy to verify type hint
-- add CI
 - Adicionar Code Climate para 
   - Qualidade de código
   - Cobertura de testes
@@ -45,6 +44,7 @@
  - inverter  valores positivos no YNAB ✅
 - ❌ Utilizar Projects do Github para o projeto
 - Usar uv :)✅
+- add CI ✅
 - ❌ Usar Python Poetry
   - Dependências✅
   - Configurações para rodar o Pytest✅
