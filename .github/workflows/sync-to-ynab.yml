@@ -26,6 +26,11 @@ jobs:
       # Empty on scheduled runs, which the script reads as "use the default".
       LOOKBACK_DAYS: ${{ inputs.lookback_days }}
 
+      # The cron expression that fired this run, empty on a manual dispatch.
+      # Staleness is measured up to the time it names rather than to when
+      # GitHub actually started the run, which can be hours later.
+      SCHEDULED_CRON: ${{ github.event.schedule }}
+
       ACCOUNT_0_NAME: ${{ vars.ACCOUNT_0_NAME }}
       ACCOUNT_0_PLUGGY_ID: ${{ secrets.ACCOUNT_0_PLUGGY_ID }}
       ACCOUNT_0_YNAB_BUDGET_ID: ${{ secrets.ACCOUNT_0_YNAB_BUDGET_ID }}

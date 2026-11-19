@@ -27,23 +27,27 @@ DEFAULT_LOOKBACK_DAYS = RECENT_WINDOW_MAX_DAYS
 TRANSACTION_PAGE_SIZE = 500
 
 # A connection that has not refreshed in this long has stopped feeding us data.
+# Staleness is measured up to the run's SCHEDULED time, not to when GitHub got
+# round to starting it -- see `get_staleness_reference_time`.
 #
 # Two days rather than three, because detection latency eats the only cheap
 # recovery there is: a gap can be backfilled for free inside the 6-day recent
 # window, and past it a backfill spends one of just four non-recent requests a
 # month. Nubank's October outage spent three of those six days on detection
 # alone -- it froze on the 12th, and the runs of the 13th (1.2 days stale) and
-# the 14th (2.2 days) both passed before the 15th caught it at 3.6 days (the
-# alarm prints whole days, so that run's log says 3). Two buys one of those
-# days back: the run of the 14th would have failed.
+# the 14th (2.2 days) both passed before the 15th caught it (at 3.6 days as
+# measured then, from that run's 10-hour-late start; 3.2 from its scheduled
+# time). Two buys one of those days back: the run of the 14th would have failed.
 #
 # Two rather than one, because a false alarm here is worse than a late one, as
 # the history below records. A healthy connection refreshes daily, leaving
-# Nubank about 5 hours stale at the 06:12Z run time and Itau about 10, so one
-# skipped collection puts Itau at 1.4 days -- 14 hours short of tripping this.
-# What eats that margin is not the refresh cadence but GitHub: it started the
-# run of the 15th 10 hours late, and that delay over a skipped collection would
-# leave about 4 hours. Enough, but not generous, and one day would have none.
+# Nubank about 5 hours stale at the 06:00Z scheduled time and Itau about 10, so
+# one skipped collection puts Itau at 1.4 days -- 14 hours short of tripping
+# this. That margin no longer depends on GitHub: it once started a run 10 hours
+# late, which under the old measurement from the actual start would have cut
+# the margin to about 4 hours. Measured from the scheduled time, a late start
+# changes nothing. One day would leave no margin for a single skipped
+# collection at all.
 #
 # History, because this was disabled once and the reversal matters: Kevin's read
 # was that `lastUpdatedAt` tracks manual edits to the item rather than data
@@ -103,6 +107,31 @@ def get_lookback_days() -> int:
     return int(raw_lookback_days)
 
 
+def get_staleness_reference_time() -> datetime:
+    """
+    The moment connection staleness is measured up to.
+
+    For a scheduled run this is the time the cron asked for, not the time the
+    run actually started. GitHub starts scheduled runs late -- usually by 12-21
+    minutes, once by ten hours -- and measuring up to the actual start would
+    count that CI jitter against the banks, eating the margin that keeps a
+    healthy connection from tripping `MAX_CONNECTION_STALENESS_DAYS`.
+
+    The workflow passes the cron expression that fired the run in the
+    SCHEDULED_CRON environment variable (`github.event.schedule`), so the
+    schedule has a single home in the workflow file. A manual dispatch leaves
+    it empty: such a run is not late for anything, so it measures up to now.
+    """
+    now = datetime.now(timezone.utc)
+
+    # Empty rather than unset on a manual dispatch, as with LOOKBACK_DAYS.
+    scheduled_cron = str(config("SCHEDULED_CRON", default="")).strip()
+    if not scheduled_cron:
+        return now
+
+    return _find_latest_daily_cron_fire_time(scheduled_cron, now)
+
+
 def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
     today = date.today()
     lookback_start_date = today - timedelta(days=get_lookback_days())
@@ -144,7 +173,11 @@ def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
     return normalize_transactions(data["results"])
 
 
-def check_connection_health(account_id: str, api_key: str) -> ConnectionHealth:
+def check_connection_health(
+    account_id: str,
+    api_key: str,
+    staleness_reference_time: datetime,
+) -> ConnectionHealth:
     """
     Inspects the Pluggy connection behind an account.
 
@@ -152,17 +185,24 @@ def check_connection_health(account_id: str, api_key: str) -> ConnectionHealth:
     connection has died -- it just returns an empty list, which is
     indistinguishable from a quiet week. This looks at the connection itself so
     that a dead connection can be reported as the failure it is.
+
+    `staleness_reference_time` is what staleness is measured up to; get it from
+    `get_staleness_reference_time`.
     """
     account = _fetch_account(account_id, api_key)
     item = _fetch_item(account["itemId"], api_key)
 
+    # Consent expiry is an absolute deadline, so it is judged against the real
+    # clock, unlike staleness.
     now = datetime.now(timezone.utc)
     last_updated_at = _parse_optional_timestamp(item.get("lastUpdatedAt"))
     consent_expires_at = _parse_optional_timestamp(item.get("consentExpiresAt"))
 
     problems = []
     problems.extend(_find_reported_error_problems(item))
-    problems.extend(_find_staleness_problems(last_updated_at, item, now))
+    problems.extend(
+        _find_staleness_problems(last_updated_at, item, staleness_reference_time)
+    )
     problems.extend(_find_consent_problems(consent_expires_at, now))
 
     return ConnectionHealth(
@@ -212,7 +252,7 @@ def normalize_transactions(pluggy_transactions) -> list[Transaction]:
 def _find_staleness_problems(
     last_updated_at: datetime | None,
     item: dict,
-    now: datetime,
+    staleness_reference_time: datetime,
 ) -> list[ConnectionProblem]:
     if last_updated_at is None:
         return [
@@ -225,7 +265,7 @@ def _find_staleness_problems(
             )
         ]
 
-    staleness = now - last_updated_at
+    staleness = staleness_reference_time - last_updated_at
     if staleness <= timedelta(days=MAX_CONNECTION_STALENESS_DAYS):
         return []
 
@@ -233,8 +273,10 @@ def _find_staleness_problems(
         ConnectionProblem(
             severity=ProblemSeverity.BROKEN,
             description=(
-                f"The bank connection last refreshed {staleness.days} days ago "
-                f"(at '{last_updated_at.isoformat()}'), so new transactions are "
+                f"The bank connection last refreshed at "
+                f"'{last_updated_at.isoformat()}', {staleness.days} days before "
+                f"'{staleness_reference_time.isoformat()}' (the time this run "
+                "measures staleness up to), so new transactions are "
                 f"not reaching Pluggy. It reports status '{item.get('status')}' "
                 f"and execution status '{item.get('executionStatus')}', which is "
                 "not a contradiction: those fields describe the last execution, "
@@ -344,6 +386,47 @@ def _fetch_item(item_id: str, api_key: str) -> dict:
         },
     )
     return _get_json_or_raise(response, f"fetching bank connection '{item_id}'")
+
+
+def _find_latest_daily_cron_fire_time(scheduled_cron: str, now: datetime) -> datetime:
+    """
+    The most recent time at or before `now` that a daily cron would have fired.
+
+    Only the daily `<minute> <hour> * * *` shape is understood, because that is
+    the only shape this workflow uses. Anything else is refused loudly rather
+    than guessed at: a wrong guess would silently skew the staleness check.
+    Times are UTC, which is GitHub's cron default; the workflow sets no
+    `timezone:` on its schedule, and adding one would need handling here.
+    """
+    cron_fields = scheduled_cron.split()
+    is_daily_cron = (
+        len(cron_fields) == 5
+        and cron_fields[0].isdigit()
+        and cron_fields[1].isdigit()
+        and cron_fields[2:] == ["*", "*", "*"]
+    )
+    if not is_daily_cron:
+        raise RuntimeError(
+            f"The workflow's schedule is '{scheduled_cron}', but the staleness "
+            "check only understands a daily '<minute> <hour> * * *' schedule. "
+            "Either keep the schedule daily or teach "
+            "_find_latest_daily_cron_fire_time the new shape."
+        )
+
+    minute = int(cron_fields[0])
+    hour = int(cron_fields[1])
+    if minute > 59 or hour > 23:
+        raise RuntimeError(
+            f"The workflow's schedule '{scheduled_cron}' names an impossible "
+            "time of day."
+        )
+
+    fire_time_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if fire_time_today <= now:
+        return fire_time_today
+    # Still before today's fire time, so this run belongs to yesterday's -- a
+    # run GitHub delayed past midnight.
+    return fire_time_today - timedelta(days=1)
 
 
 def _parse_optional_timestamp(raw_timestamp: str | None) -> datetime | None:
