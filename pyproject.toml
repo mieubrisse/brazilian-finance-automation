@@ -37,8 +37,8 @@ select = ["E", "F", "I"]
 ignore = []
 line-length = 88
 
-[tool.uv]
-dev-dependencies = [
+[dependency-groups]
+dev = [
     "freezegun>=1.5.1",
     "ipdb>=0.13.13",
     "pytest>=8.3.3",

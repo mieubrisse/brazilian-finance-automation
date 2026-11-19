@@ -54,7 +54,7 @@ def test_connection_refreshed_this_morning_is_healthy(pluggy):
 def test_connection_frozen_for_days_is_broken(pluggy):
     pluggy.add_account(
         ACCOUNT_ID,
-        last_updated_at=ago(NOW, days=3),
+        last_updated_at=ago(NOW, days=3, hours=1),
         consent_expires_at=FAR_FUTURE_CONSENT,
     )
 

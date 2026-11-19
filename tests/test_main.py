@@ -105,7 +105,9 @@ def test_stale_connection_fails_the_run(
     output = capsys.readouterr().out
     assert exit_code == 1
     assert "THE BRAZILIAN SYNC IS BROKEN" in output
-    assert "[BROKEN]" in output
+    # Name the cause: main reports any crash as BROKEN, so the banner alone
+    # would pass even with the staleness check disarmed.
+    assert "[BROKEN] The bank connection last refreshed" in output
 
 
 def test_reported_error_fails_the_run(
@@ -122,7 +124,7 @@ def test_reported_error_fails_the_run(
     exit_code = run_sync()
 
     assert exit_code == 1
-    assert "[BROKEN]" in capsys.readouterr().out
+    assert "[BROKEN] Pluggy reports an error" in capsys.readouterr().out
 
 
 def test_consent_about_to_expire_fails_the_run(
