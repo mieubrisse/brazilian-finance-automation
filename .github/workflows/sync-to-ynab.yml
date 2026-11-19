@@ -12,6 +12,8 @@ on:
         required: false
         type: string
   schedule:
+    # Read back as UTC by the staleness check (see SCHEDULED_CRON below), so
+    # adding a `timezone:` here needs a matching change in my_pluggy.py.
     - cron: 0 6 * * *  # Every day at 6AM
   push:
       branches:

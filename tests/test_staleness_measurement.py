@@ -7,10 +7,12 @@ so no test can reach the real Pluggy or YNAB API.
 """
 
 import importlib
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import decouple
 import pytest
 import requests_mock
 from freezegun import freeze_time
@@ -50,10 +52,22 @@ STALE_STALENESS = timedelta(days=3)
 
 STALENESS_ALARM_TEXT = "The bank connection last refreshed"
 ACTION_REQUIRED_TEXT = "ACTION REQUIRED"
+# Printed when an account's sync raises -- which is how an unmocked request
+# (NoMockAddress) would show up, so no scenario here may produce it.
+SYNC_FAILED_TEXT = "Sync failed"
+FAR_FUTURE_CONSENT_EXPIRY = datetime(2027, 6, 1, tzinfo=timezone.utc)
 
 
 @pytest.fixture
 def run_sync(monkeypatch, capsys):
+    # Only this fixture's environment may configure the run: no dotenv file or
+    # settings.ini from the checkout, and no extra accounts from the shell.
+    monkeypatch.setattr(
+        decouple.config, "config", decouple.Config(decouple.RepositoryEmpty())
+    )
+    for envvar in list(os.environ):
+        if envvar.startswith("ACCOUNT_"):
+            monkeypatch.delenv(envvar)
     monkeypatch.setenv("YNAB_TOKEN", "fake-ynab-token")
     monkeypatch.setenv("PLUGGY_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("PLUGGY_CLIENT_SECRET", "fake-client-secret")
@@ -66,13 +80,19 @@ def run_sync(monkeypatch, capsys):
     # at import time.
     main_module = importlib.import_module("main")
 
-    def run(start_time, last_updated_at, scheduled_cron, run_attempt="1"):
+    def run(
+        start_time,
+        last_updated_at,
+        scheduled_cron,
+        run_attempt="1",
+        consent_expires_at=FAR_FUTURE_CONSENT_EXPIRY,
+    ):
         monkeypatch.setenv("SCHEDULED_CRON", scheduled_cron)
         # Set explicitly so a test run inside GitHub Actions is not steered by
         # the runner's own value.
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", run_attempt)
         with requests_mock.Mocker() as http_mock, freeze_time(start_time):
-            _register_fake_apis(http_mock, last_updated_at)
+            _register_fake_apis(http_mock, last_updated_at, consent_expires_at)
             try:
                 main_module.main()
                 exit_code = 0
@@ -81,26 +101,29 @@ def run_sync(monkeypatch, capsys):
             requested_hostnames = {
                 request.hostname for request in http_mock.request_history
             }
+        output = capsys.readouterr().out
         assert requested_hostnames <= MOCKED_HOSTNAMES
-        return exit_code, capsys.readouterr().out
+        assert SYNC_FAILED_TEXT not in output
+        return exit_code, output
 
     return run
 
 
 @pytest.mark.parametrize("delayed_start", DELAYED_STARTS, ids=DELAYED_START_IDS)
 @pytest.mark.parametrize(
-    "staleness_at_scheduled_time",
-    [HEALTHY_STALENESS, NEAR_THRESHOLD_STALENESS, STALE_STALENESS],
+    ("staleness_at_scheduled_time", "expected_exit_code"),
+    [(HEALTHY_STALENESS, 0), (NEAR_THRESHOLD_STALENESS, 0), (STALE_STALENESS, 1)],
     ids=["healthy-10h", "near-threshold-1.9d", "stale-3d"],
 )
 def test_delayed_run_reaches_the_same_verdict_as_an_on_time_run(
-    run_sync, staleness_at_scheduled_time, delayed_start
+    run_sync, staleness_at_scheduled_time, expected_exit_code, delayed_start
 ):
     last_updated_at = SCHEDULED_TIME - staleness_at_scheduled_time
 
     on_time_exit_code, _ = run_sync(ON_TIME_START, last_updated_at, DAILY_CRON)
     delayed_exit_code, _ = run_sync(delayed_start, last_updated_at, DAILY_CRON)
 
+    assert on_time_exit_code == expected_exit_code
     assert delayed_exit_code == on_time_exit_code
 
 
@@ -181,6 +204,23 @@ def test_rerun_measures_staleness_up_to_its_start(
     assert exit_code == expected_exit_code
 
 
+def test_consent_expiry_is_judged_against_the_real_clock(run_sync):
+    # Expired by the time the delayed run starts, though not at 06:00Z: unlike
+    # staleness, a deadline that has passed has passed.
+    consent_expires_at = SCHEDULED_TIME + timedelta(hours=1)
+    last_updated_at = SCHEDULED_TIME - HEALTHY_STALENESS
+
+    exit_code, output = run_sync(
+        OBSERVED_DELAYED_START,
+        last_updated_at,
+        DAILY_CRON,
+        consent_expires_at=consent_expires_at,
+    )
+
+    assert exit_code == 1
+    assert "The Open Finance consent expired" in output
+
+
 def test_unrecognised_schedule_falls_back_to_now_and_still_syncs(run_sync):
     # 1.9 days stale at 06:00 but 2.3 days at the start: fails only if the
     # fallback measures up to the start, the stricter choice.
@@ -229,7 +269,7 @@ def test_non_daily_cron_is_not_guessed_at(unrecognised_cron):
     assert _find_latest_daily_cron_fire_time(unrecognised_cron, ON_TIME_START) is None
 
 
-def _register_fake_apis(http_mock, last_updated_at):
+def _register_fake_apis(http_mock, last_updated_at, consent_expires_at):
     http_mock.post(f"{PLUGGY_URL}auth", json={"apiKey": "fake-api-key"})
     http_mock.get(
         f"{PLUGGY_URL}accounts/{PLUGGY_ACCOUNT_ID}",
@@ -243,7 +283,9 @@ def _register_fake_apis(http_mock, last_updated_at):
             "executionStatus": "SUCCESS",
             "error": None,
             "lastUpdatedAt": last_updated_at.isoformat().replace("+00:00", "Z"),
-            "consentExpiresAt": "2027-06-01T00:00:00.000Z",
+            "consentExpiresAt": consent_expires_at.isoformat().replace(
+                "+00:00", "Z"
+            ),
         },
     )
     http_mock.get(

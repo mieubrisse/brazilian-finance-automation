@@ -41,12 +41,12 @@ TRANSACTION_PAGE_SIZE = 500
 #
 # Two rather than one, because a false alarm here is worse than a late one, as
 # the history below records. A healthy connection refreshes daily, leaving
-# Nubank about 5 hours stale at the 06:00Z scheduled time and Itau about 10, so
-# one skipped collection puts Itau at 1.4 days -- 14 hours short of tripping
-# this. GitHub's late starts no longer eat into that margin: they run 7-35
-# minutes as a rule and reached 2-3 hours three times in 100 runs (Aug-Nov
-# 2026), but staleness is measured up to the scheduled time, so a late start
-# changes nothing. (The run of 2026-10-15 shows a 16:13Z start in
+# Nubank about 5 hours stale at the 06:00Z scheduled time and Itau 8-10, so one
+# skipped collection puts Itau at up to 1.4 days -- at least 14 hours short of
+# tripping this. GitHub's late starts no longer eat into that margin: they run
+# 7-35 minutes as a rule and reached 2h01m, 3h12m and 3h16m in the 100 runs of
+# Aug-Nov 2026, but staleness is measured up to the scheduled time, so a late
+# start changes nothing. (The run of 2026-10-15 shows a 16:13Z start in
 # `gh run list`; that was a manual re-run, attempt 2 -- the scheduled attempt
 # started on time.) One day would leave no margin for a single skipped
 # collection at all.
@@ -115,7 +115,7 @@ def get_staleness_reference_time() -> datetime:
 
     For a scheduled run this is the time the cron asked for, not the time the
     run actually started. GitHub starts scheduled runs late -- usually by 7-35
-    minutes, occasionally by 2-3 hours -- and measuring up to the actual start
+    minutes, occasionally by over three hours -- and measuring up to the actual start
     would count that CI jitter against the banks, eating the margin that keeps
     a healthy connection from tripping `MAX_CONNECTION_STALENESS_DAYS`.
 

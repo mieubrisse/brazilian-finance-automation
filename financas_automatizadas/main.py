@@ -153,7 +153,7 @@ def announce_staleness_reference_time(staleness_reference_time: datetime) -> Non
 
     A late start is not a fault here -- the staleness check is deliberately
     immune to it -- but it is worth a line in the log: GitHub has started this
-    workflow up to three hours late, and that is otherwise invisible.
+    workflow over three hours late, and that is otherwise invisible.
     """
     now = datetime.now(timezone.utc)
     lateness_hours = (now - staleness_reference_time).total_seconds() / 3600
