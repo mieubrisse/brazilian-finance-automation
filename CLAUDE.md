@@ -174,9 +174,12 @@ Gotchas
 
 - The default branch is `kevin-main`, not `main`. There is no `main` branch;
   anything pinned to it gets a 404.
-- **The test suite does not run.** All four modules under `tests/` fail at
-  import, referencing functions that no longer exist, and there is no CI. Do not
-  read that directory as coverage.
+- `make test` runs the suite, and the `Test` workflow runs it on every pull
+  request against `kevin-main`. Every test runs under a strict `requests_mock`
+  (`tests/conftest.py`), so a test that would reach real Pluggy or YNAB fails
+  instead. CI also runs `make test-offline`, which repeats the suite with no
+  network at all. The repo is public: fixtures stay synthetic, never ids or
+  transactions copied from a run log.
 - The `push` trigger in `sync-to-ynab.yml` points at a `trunk` branch that does
   not exist, inherited from upstream.
 
