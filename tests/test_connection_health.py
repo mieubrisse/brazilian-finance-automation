@@ -16,7 +16,8 @@ from schemas import ProblemSeverity
 
 from tests.fakes import FAKE_PLUGGY_API_KEY, FakePluggy, ago, from_now
 
-# Shortly after the 06:00 UTC cron fires, which is when the real check runs.
+# Both the clock and the time staleness is measured up to; these tests exercise
+# the threshold, not where the reference time comes from.
 NOW = datetime(2026, 3, 10, 6, 15, tzinfo=timezone.utc)
 ACCOUNT_ID = "fake-account-checking"
 FAR_FUTURE_CONSENT = from_now(NOW, days=300)
