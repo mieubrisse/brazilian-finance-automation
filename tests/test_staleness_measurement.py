@@ -1,34 +1,24 @@
 """
 Connection staleness must reflect the banks, not when GitHub started the run.
 
-These drive the real `main()` end to end. Every HTTP call goes through
-`requests_mock`, which raises `NoMockAddress` on any URL not registered here,
-so no test can reach the real Pluggy or YNAB API.
+These drive the real `main()` end to end on the suite's strict HTTP mock (see
+`conftest.py`), varying only when the run starts and how stale the connection
+is at the scheduled time, and judge the exit code the workflow would see.
 """
 
-import importlib
-import os
-import sys
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
-import decouple
+import main
 import pytest
-import requests_mock
 from freezegun import freeze_time
 
-# The application modules import each other by bare name (`from my_pluggy
-# import ...`), exactly as `make run` executes them.
-APP_DIRPATH = Path(__file__).resolve().parent.parent / "financas_automatizadas"
-sys.path.insert(0, str(APP_DIRPATH))
-
-PLUGGY_URL = "https://api.pluggy.ai/"
-YNAB_URL = "https://api.youneedabudget.com/v1"
-MOCKED_HOSTNAMES = {"api.pluggy.ai", "api.youneedabudget.com"}
-
-PLUGGY_ACCOUNT_ID = "fake-pluggy-account"
-PLUGGY_ITEM_ID = "fake-pluggy-item"
-YNAB_BUDGET_ID = "fake-ynab-budget"
+from tests.fakes import (
+    FAKE_YNAB_ACCOUNT_ID,
+    FAKE_YNAB_BUDGET_ID,
+    YNAB_CREATE_TRANSACTION_URL,
+    FakePluggy,
+    build_pluggy_transaction,
+)
 
 DAILY_CRON = "0 6 * * *"
 SCHEDULED_TIME = datetime(2026, 10, 15, 6, 0, tzinfo=timezone.utc)
@@ -50,35 +40,26 @@ NEAR_THRESHOLD_STALENESS = timedelta(days=1.9)
 JUST_PAST_THRESHOLD_STALENESS = timedelta(days=2, minutes=15)
 STALE_STALENESS = timedelta(days=3)
 
-STALENESS_ALARM_TEXT = "The bank connection last refreshed"
-ACTION_REQUIRED_TEXT = "ACTION REQUIRED"
-# Printed when an account's sync raises -- which is how an unmocked request
-# (NoMockAddress) would show up, so no scenario here may produce it.
-SYNC_FAILED_TEXT = "Sync failed"
 FAR_FUTURE_CONSENT_EXPIRY = datetime(2027, 6, 1, tzinfo=timezone.utc)
+ACCOUNT_ID = "fake-account-checking"
+
+STALENESS_ALARM_TEXT = "[BROKEN] The bank connection last refreshed"
+ACTION_REQUIRED_TEXT = "ACTION REQUIRED"
+# Printed when an account's sync raises, which is how an unmocked request would
+# surface, so no scenario here may produce it.
+SYNC_FAILED_TEXT = "Sync failed"
 
 
 @pytest.fixture
-def run_sync(monkeypatch, capsys):
-    # Only this fixture's environment may configure the run: no dotenv file or
-    # settings.ini from the checkout, and no extra accounts from the shell.
-    monkeypatch.setattr(
-        decouple.config, "config", decouple.Config(decouple.RepositoryEmpty())
-    )
-    for envvar in list(os.environ):
-        if envvar.startswith("ACCOUNT_"):
-            monkeypatch.delenv(envvar)
-    monkeypatch.setenv("YNAB_TOKEN", "fake-ynab-token")
+def run_sync(monkeypatch, capsys, requests_mock):
     monkeypatch.setenv("PLUGGY_CLIENT_ID", "fake-client-id")
     monkeypatch.setenv("PLUGGY_CLIENT_SECRET", "fake-client-secret")
-    monkeypatch.setenv("ACCOUNT_0_NAME", "Itau Checking")
-    monkeypatch.setenv("ACCOUNT_0_PLUGGY_ID", PLUGGY_ACCOUNT_ID)
-    monkeypatch.setenv("ACCOUNT_0_YNAB_BUDGET_ID", YNAB_BUDGET_ID)
-    monkeypatch.setenv("ACCOUNT_0_YNAB_ID", "fake-ynab-account")
-    monkeypatch.setenv("LOOKBACK_DAYS", "")
-    # Imported only once the environment is in place: ynab.py reads its token
-    # at import time.
-    main_module = importlib.import_module("main")
+    monkeypatch.setenv("ACCOUNT_0_NAME", "Fake Checking")
+    monkeypatch.setenv("ACCOUNT_0_PLUGGY_ID", ACCOUNT_ID)
+    monkeypatch.setenv("ACCOUNT_0_YNAB_BUDGET_ID", FAKE_YNAB_BUDGET_ID)
+    monkeypatch.setenv("ACCOUNT_0_YNAB_ID", FAKE_YNAB_ACCOUNT_ID)
+    requests_mock.post(YNAB_CREATE_TRANSACTION_URL, status_code=201, json={})
+    pluggy = FakePluggy(requests_mock)
 
     def run(
         start_time,
@@ -87,22 +68,30 @@ def run_sync(monkeypatch, capsys):
         run_attempt="1",
         consent_expires_at=FAR_FUTURE_CONSENT_EXPIRY,
     ):
+        """Runs the sync and returns the exit code and log the workflow would see."""
         monkeypatch.setenv("SCHEDULED_CRON", scheduled_cron)
-        # Set explicitly so a test run inside GitHub Actions is not steered by
-        # the runner's own value.
         monkeypatch.setenv("GITHUB_RUN_ATTEMPT", run_attempt)
-        with requests_mock.Mocker() as http_mock, freeze_time(start_time):
-            _register_fake_apis(http_mock, last_updated_at, consent_expires_at)
+        pluggy.add_account(
+            ACCOUNT_ID,
+            last_updated_at=last_updated_at,
+            consent_expires_at=consent_expires_at,
+            transactions=[
+                build_pluggy_transaction(
+                    transaction_id="fake-transaction-1",
+                    amount=-12.5,
+                    transaction_type="DEBIT",
+                    description="Fake purchase|FAKE MERCHANT",
+                    date=SCHEDULED_TIME - timedelta(days=1),
+                )
+            ],
+        )
+        with freeze_time(start_time):
             try:
-                main_module.main()
+                main.main()
                 exit_code = 0
-            except SystemExit as system_exit:
-                exit_code = system_exit.code
-            requested_hostnames = {
-                request.hostname for request in http_mock.request_history
-            }
+            except SystemExit as exit_request:
+                exit_code = exit_request.code
         output = capsys.readouterr().out
-        assert requested_hostnames <= MOCKED_HOSTNAMES
         assert SYNC_FAILED_TEXT not in output
         return exit_code, output
 
@@ -156,7 +145,6 @@ def test_stale_connection_fails(run_sync, start_time, staleness_at_scheduled_tim
 
     assert exit_code == 1
     assert STALENESS_ALARM_TEXT in output
-    assert "[BROKEN]" in output
 
 
 def test_late_start_is_reported_in_the_log(run_sync):
@@ -267,46 +255,3 @@ def test_non_daily_cron_is_not_guessed_at(unrecognised_cron):
     from my_pluggy import _find_latest_daily_cron_fire_time
 
     assert _find_latest_daily_cron_fire_time(unrecognised_cron, ON_TIME_START) is None
-
-
-def _register_fake_apis(http_mock, last_updated_at, consent_expires_at):
-    http_mock.post(f"{PLUGGY_URL}auth", json={"apiKey": "fake-api-key"})
-    http_mock.get(
-        f"{PLUGGY_URL}accounts/{PLUGGY_ACCOUNT_ID}",
-        json={"id": PLUGGY_ACCOUNT_ID, "itemId": PLUGGY_ITEM_ID},
-    )
-    http_mock.get(
-        f"{PLUGGY_URL}items/{PLUGGY_ITEM_ID}",
-        json={
-            "id": PLUGGY_ITEM_ID,
-            "status": "UPDATED",
-            "executionStatus": "SUCCESS",
-            "error": None,
-            "lastUpdatedAt": last_updated_at.isoformat().replace("+00:00", "Z"),
-            "consentExpiresAt": consent_expires_at.isoformat().replace(
-                "+00:00", "Z"
-            ),
-        },
-    )
-    http_mock.get(
-        f"{PLUGGY_URL}transactions",
-        json={
-            "total": 1,
-            "totalPages": 1,
-            "page": 1,
-            "results": [
-                {
-                    "id": "fake-transaction",
-                    "description": "Transferência enviada|FULANO",
-                    "amount": -42.5,
-                    "date": "2026-10-14T12:00:00.000Z",
-                    "type": "DEBIT",
-                }
-            ],
-        },
-    )
-    http_mock.post(
-        f"{YNAB_URL}/budgets/{YNAB_BUDGET_ID}/transactions",
-        status_code=201,
-        json={},
-    )

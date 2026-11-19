@@ -30,7 +30,9 @@ def pluggy(requests_mock) -> FakePluggy:
 def check_health():
     with freeze_time(NOW):
         return check_connection_health(
-            account_id=ACCOUNT_ID, api_key=FAKE_PLUGGY_API_KEY
+            account_id=ACCOUNT_ID,
+            api_key=FAKE_PLUGGY_API_KEY,
+            staleness_reference_time=NOW,
         )
 
 

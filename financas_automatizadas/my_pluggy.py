@@ -296,10 +296,8 @@ def _find_staleness_problems(
         ConnectionProblem(
             severity=ProblemSeverity.BROKEN,
             description=(
-                f"The bank connection last refreshed at "
-                f"'{last_updated_at.isoformat()}', {staleness.days} days before "
-                f"'{staleness_reference_time.isoformat()}' (the time this run "
-                "measures staleness up to), so new transactions are "
+                f"The bank connection last refreshed {staleness.days} days ago "
+                f"(at '{last_updated_at.isoformat()}'), so new transactions are "
                 f"not reaching Pluggy. It reports status '{item.get('status')}' "
                 f"and execution status '{item.get('executionStatus')}', which is "
                 "not a contradiction: those fields describe the last execution, "
