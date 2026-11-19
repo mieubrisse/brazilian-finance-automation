@@ -1,0 +1,28 @@
+name: Test
+
+# Runs the suite on every pull request against kevin-main, so a change that
+# disarms a health check is caught without anyone remembering to look.
+on:
+  pull_request:
+    branches:
+      - kevin-main
+  push:
+    branches:
+      - kevin-main
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository code
+        uses: actions/checkout@v4
+      - name: Install the latest version of uv
+        uses: astral-sh/setup-uv@v3
+      - name: Install Python
+        run: uv python install  # The version in .python-version
+      - name: Run the test suite
+        run: make test
+      - name: Run the test suite again with no network at all
+        run: make test-offline

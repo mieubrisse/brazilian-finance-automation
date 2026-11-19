@@ -1,177 +1,174 @@
-from unittest import TestCase, mock, skip
-from unittest.mock import MagicMock
+"""
+The whole sync, end to end, judged by the one thing that reaches Kevin: the
+exit code. A non-zero exit turns the scheduled run red, which is the only thing
+that produces a notification. A problem printed under a zero exit is never seen.
+"""
 
-import requests_mock
+from datetime import datetime, timezone
+
+import main
+import pytest
 from freezegun import freeze_time
-from pynubank import MockHttpClient
 
-from financas_automatizadas.main import main
+from tests.fakes import (
+    FAKE_YNAB_ACCOUNT_ID,
+    FAKE_YNAB_BUDGET_ID,
+    YNAB_CREATE_TRANSACTION_URL,
+    FakePluggy,
+    ago,
+    build_pluggy_transaction,
+    from_now,
+)
+
+NOW = datetime(2026, 3, 10, 6, 15, tzinfo=timezone.utc)
+FAR_FUTURE_CONSENT = from_now(NOW, days=300)
+
+CHECKING_ACCOUNT_ID = "fake-account-checking"
+CARD_ACCOUNT_ID = "fake-account-card"
 
 
+@pytest.fixture
+def pluggy(requests_mock) -> FakePluggy:
+    return FakePluggy(requests_mock)
 
-# class MainTest(TestCase):
-#     @mock.patch("financas_automatizadas.main.setup_nubank_client_authentication")
-#     @requests_mock.Mocker()
-#     @freeze_time("2021-09-07")
-#     def test_send_account_transactions_to_ynab(
-#         self,
-#         setup_nubank_client_authentication_mocked,
-#         requests_mock: requests_mock.Mocker,
-#     ):
-#         # Arrange
-#         MockedNubank = MagicMock()
-#         account_statements = {
-#             "pageInfo": {"hasNextPage": True},
-#             "edges": [
-#                 # Pagamendo agendado
-#                 {
-#                     "cursor": "ezpwcmlvcml0eSAwLCA6dGltZXN0YW1wICNudS90aW1lICIyMDIzLTAyLTA4VDEyOjAwOjAwWiIsIDppZCAjdXVpZCAiNjNiNDNjYWQtYzQ0YS00ZTc1LWFhNzYtNjA1NTUwZDBmNjA4In0=",
-#                     "node": {
-#                         "tags": ["money-out"],
-#                         "showClock": False,
-#                         "displayDate": "Ontem",
-#                         "footer": "Pix",
-#                         "title": "Transferência enviada",
-#                         "detailsDeeplink": "nuapp://flutter/savings/details-screen/type/PIX_TRANSFER_OUT_REQUEST/id/63b96ace-d914-482d-8d6e-6cba2b4d1287",
-#                         "id": "63b96ace-d914-482d-8d6e-6cba2b4d1287",
-#                         "strikethrough": False,
-#                         "kind": "NEUTRAL",
-#                         "iconKey": "nuds_v2_icon.money_out",
-#                         "postDate": "2023-01-07",
-#                         "detail": "Joãozinho \nR$\xa015,00",
-#                         "amount": 15.0,
-#                     },
-#                 },
-#                 # Falha no pagamento strikethrough True
-#                 {
-#                     "cursor": "ezpwcmlvcml0eSAwLCA6dGltZXN0YW1wICNudS90aW1lICIyMDIzLTAxLTAzVDA0OjQ5OjM5LjM3NVoiLCA6aWQgI3V1aWQgIjYzOGEyNGY3LTNiYTQtNDMxMi05ZTAxLTcxNmQ0ODYxNWY5MiJ9",
-#                     "node": {
-#                         "tags": ["money-out", "payments"],
-#                         "showClock": False,
-#                         "displayDate": "03 JAN",
-#                         "footer": "R$\xa04.028,50",
-#                         "title": "Falha no agendamento",
-#                         "detailsDeeplink": None,
-#                         "id": "638a24f7-3ba4-4312-9e01-716d48615f92",
-#                         "strikethrough": True,
-#                         "kind": "NEUTRAL",
-#                         "iconKey": "nuds_v2_icon.bar_code",
-#                         "postDate": "2023-01-03",
-#                         "detail": "NAO INFORMADO",
-#                         "amount": 4028.5,
-#                     },
-#                 },
-#             ],
-#         }
-#         card_statements = [
-#             {
-#                 "description": "Willy da Silva Mendes",
-#                 "category": "transaction",
-#                 "amount": 200,
-#                 "time": "2021-08-27T22:29:04Z",
-#                 "source": "upfront_national",
-#                 "title": "lazer",
-#                 "amount_without_iof": 200,
-#                 "account": "55c0e5cc-5014-4d2b-800a-c40c86c6448b",
-#                 "details": {"status": "settled", "subcategory": "card_present"},
-#                 "id": "61296731-3757-4f04-a66e-46c2b510d3a0",
-#                 "_links": {
-#                     "self": {
-#                         "href": "https://prod-s0-facade.nubank.com.br/api/transactions/61296731-3757-4f04-a66e-46c2b510d3a0"
-#                     }
-#                 },
-#                 "tokenized": False,
-#                 "href": "nuapp://transaction/61296731-3757-4f04-a66e-46c2b510d3a0",
-#             },
-#             {
-#                 "description": "Pag*Tananimalthadesou",
-#                 "category": "transaction",
-#                 "amount": 500,
-#                 "time": "2021-08-27T22:27:05Z",
-#                 "source": "upfront_national",
-#                 "title": "outros",
-#                 "amount_without_iof": 500,
-#                 "account": "55c0e5cc-5014-4d2b-800a-c40c86c6448b",
-#                 "details": {"status": "settled", "subcategory": "card_present"},
-#                 "id": "612966b9-01cc-4a11-8b5e-cb580e63ac10",
-#                 "_links": {
-#                     "self": {
-#                         "href": "https://prod-s0-facade.nubank.com.br/api/transactions/612966b9-01cc-4a11-8b5e-cb580e63ac10"
-#                     }
-#                 },
-#                 "tokenized": False,
-#                 "href": "nuapp://transaction/612966b9-01cc-4a11-8b5e-cb580e63ac10",
-#             },
-#             {
-#                 "description": "Usina da Massa",
-#                 "category": "transaction",
-#                 "amount": 3250,
-#                 "time": "2021-09-07T22:51:41Z",
-#                 "source": "upfront_national",
-#                 "title": "restaurante",
-#                 "amount_without_iof": 3250,
-#                 "account": "55c0e5cc-5014-4d2b-800a-c40c86c6448b",
-#                 "details": {"status": "settled", "subcategory": "card_present"},
-#                 "id": "61281afe-d463-468b-a043-e3bcba8a5931",
-#                 "_links": {
-#                     "self": {
-#                         "href": "https://prod-s0-facade.nubank.com.br/api/transactions/61281afe-d463-468b-a043-e3bcba8a5931"
-#                     }
-#                 },
-#                 "tokenized": False,
-#                 "href": "nuapp://transaction/61281afe-d463-468b-a043-e3bcba8a5931",
-#             },
-#         ]
-#
-#         mocked_nu_instance = MagicMock()
-#         MockedNubank.return_value = mocked_nu_instance
-#         mocked_nu_instance.get_account_statements_paginated.return_value = (
-#             account_statements
-#         )
-#         mocked_nu_instance.get_card_statements.return_value = card_statements
-#
-#         ynab_account_transaction_response = {
-#             "transaction": {
-#                 "account_id": "d928b335-f1c5-4cf4-8d8b-99d6d8df67bb",
-#                 "date": "2021-09-07",
-#                 "amount": 101,
-#                 "payee_id": None,
-#                 "payee_name": None,
-#                 "category_id": None,
-#                 "memo": "LIVEPIX LTDA\nR$\xa01,00",
-#                 "cleared": "cleared",
-#                 "approved": True,
-#                 "import_id": "6137cd3a-58a4-4a0a-a04e-8be7b347d38d",
-#             }
-#         }
-#
-#         ynab_card_transaction_response = {
-#             "transaction": {
-#                 "account_id": "e98ed2b0-2c5e-4f37-b82d-9e1fb5caa510",
-#                 "date": "2021-09-07",
-#                 "amount": 3250,
-#                 "payee_id": None,
-#                 "payee_name": None,
-#                 "category_id": None,
-#                 "memo": "Usina da Massa - restaurante",
-#                 "cleared": "cleared",
-#                 "approved": True,
-#                 "import_id": "61281afe-d463-468b-a043-e3bcba8a5931",
-#             }
-#         }
-#
-#         requests_mock.post(
-#             "https://api.youneedabudget.com/v1/budgets/72bf90ed-5c22-4f88-bc02-95fcd82474cb/transactions",
-#             [
-#                 {"json": ynab_account_transaction_response, "status_code": 201},
-#                 {"json": ynab_card_transaction_response, "status_code": 201},
-#             ],
-#         )
-#
-#         # Act
-#         result = main(nubank_client=MockedNubank(client=MockHttpClient))
-#
-#         # Assert
-#         self.assertEqual(
-#             [ynab_account_transaction_response, ynab_card_transaction_response], result
-#         )
+
+@pytest.fixture
+def ynab_create_transaction(requests_mock):
+    return requests_mock.post(YNAB_CREATE_TRANSACTION_URL, status_code=201, json={})
+
+
+@pytest.fixture(autouse=True)
+def pluggy_credentials(monkeypatch):
+    monkeypatch.setenv("PLUGGY_CLIENT_ID", "fake-client-id")
+    monkeypatch.setenv("PLUGGY_CLIENT_SECRET", "fake-client-secret")
+
+
+def configure_account(
+    monkeypatch, index: int, name: str, pluggy_account_id: str
+) -> None:
+    monkeypatch.setenv(f"ACCOUNT_{index}_NAME", name)
+    monkeypatch.setenv(f"ACCOUNT_{index}_PLUGGY_ID", pluggy_account_id)
+    monkeypatch.setenv(f"ACCOUNT_{index}_YNAB_BUDGET_ID", FAKE_YNAB_BUDGET_ID)
+    monkeypatch.setenv(f"ACCOUNT_{index}_YNAB_ID", FAKE_YNAB_ACCOUNT_ID)
+
+
+def run_sync() -> int:
+    """Runs the sync and returns the exit code the workflow would see."""
+    with freeze_time(NOW):
+        try:
+            main.main()
+        except SystemExit as exit_request:
+            return exit_request.code
+    return 0
+
+
+def test_healthy_connection_syncs_and_exits_zero(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    configure_account(monkeypatch, 0, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, hours=10),
+        consent_expires_at=FAR_FUTURE_CONSENT,
+        transactions=[
+            build_pluggy_transaction(
+                transaction_id="fake-transaction-1",
+                amount=-12.5,
+                transaction_type="DEBIT",
+                description="Fake purchase|FAKE MERCHANT",
+                date=ago(NOW, days=1),
+            )
+        ],
+    )
+
+    exit_code = run_sync()
+
+    output = capsys.readouterr().out
+    assert exit_code == 0
+    assert "Connection: status 'UPDATED'" in output
+    assert "ACTION REQUIRED" not in output
+    assert ynab_create_transaction.call_count == 1
+
+
+def test_stale_connection_fails_the_run(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    configure_account(monkeypatch, 0, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, days=3),
+        consent_expires_at=FAR_FUTURE_CONSENT,
+    )
+
+    exit_code = run_sync()
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "THE BRAZILIAN SYNC IS BROKEN" in output
+    assert "[BROKEN]" in output
+
+
+def test_reported_error_fails_the_run(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    configure_account(monkeypatch, 0, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, hours=10),
+        consent_expires_at=FAR_FUTURE_CONSENT,
+        error={"code": "FAKE_ERROR_CODE", "message": "Fake connector failure"},
+    )
+
+    exit_code = run_sync()
+
+    assert exit_code == 1
+    assert "[BROKEN]" in capsys.readouterr().out
+
+
+def test_consent_about_to_expire_fails_the_run(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    # Still red: a warning inside a green run is a warning nobody reads.
+    configure_account(monkeypatch, 0, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, hours=10),
+        consent_expires_at=from_now(NOW, days=10),
+    )
+
+    exit_code = run_sync()
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "ABOUT TO BREAK" in output
+    assert "[WARNING]" in output
+
+
+def test_deleted_account_fails_the_run_without_hiding_the_others(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    configure_account(monkeypatch, 0, "Fake Card", CARD_ACCOUNT_ID)
+    configure_account(monkeypatch, 1, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_deleted_account(CARD_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, hours=10),
+        consent_expires_at=FAR_FUTURE_CONSENT,
+        transactions=[
+            build_pluggy_transaction(
+                transaction_id="fake-transaction-2",
+                amount=100.0,
+                transaction_type="CREDIT",
+                description="Fake transfer received|FAKE SENDER",
+                date=ago(NOW, days=1),
+            )
+        ],
+    )
+
+    exit_code = run_sync()
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "Pluggy has no account with the configured ID" in output
+    # The broken card must not stop the healthy checking account syncing.
+    assert ynab_create_transaction.call_count == 1
