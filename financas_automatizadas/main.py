@@ -76,8 +76,6 @@ def get_bank_accounts_from_env():
     return bank_accounts
 
 def main() -> None:
-    # Worked out before any request, so a schedule this cannot understand fails
-    # the run without spending anything at Pluggy or half-syncing.
     staleness_reference_time = get_staleness_reference_time()
     announce_staleness_reference_time(staleness_reference_time)
 
@@ -155,15 +153,15 @@ def announce_staleness_reference_time(staleness_reference_time: datetime) -> Non
 
     A late start is not a fault here -- the staleness check is deliberately
     immune to it -- but it is worth a line in the log: GitHub has started this
-    workflow as much as ten hours late, and that is otherwise invisible.
+    workflow up to three hours late, and that is otherwise invisible.
     """
     now = datetime.now(timezone.utc)
     lateness_hours = (now - staleness_reference_time).total_seconds() / 3600
     print(
         "Connection staleness is measured up to "
         f"'{staleness_reference_time.isoformat()}' -- the scheduled time on a "
-        "scheduled run, the start on a manual one. This run started "
-        f"{lateness_hours:.1f} hours after it."
+        "scheduled run's first attempt, otherwise this run's own start. This "
+        f"run started {lateness_hours:.1f} hours after it."
     )
 
 

@@ -35,18 +35,20 @@ TRANSACTION_PAGE_SIZE = 500
 # window, and past it a backfill spends one of just four non-recent requests a
 # month. Nubank's October outage spent three of those six days on detection
 # alone -- it froze on the 12th, and the runs of the 13th (1.2 days stale) and
-# the 14th (2.2 days) both passed before the 15th caught it (at 3.6 days as
-# measured then, from that run's 10-hour-late start; 3.2 from its scheduled
-# time). Two buys one of those days back: the run of the 14th would have failed.
+# the 14th (2.2 days) both passed before the 15th caught it at 3.2 days (the
+# alarm prints whole days, so that run's log says 3). Two buys one of those
+# days back: the run of the 14th would have failed.
 #
 # Two rather than one, because a false alarm here is worse than a late one, as
 # the history below records. A healthy connection refreshes daily, leaving
 # Nubank about 5 hours stale at the 06:00Z scheduled time and Itau about 10, so
 # one skipped collection puts Itau at 1.4 days -- 14 hours short of tripping
-# this. That margin no longer depends on GitHub: it once started a run 10 hours
-# late, which under the old measurement from the actual start would have cut
-# the margin to about 4 hours. Measured from the scheduled time, a late start
-# changes nothing. One day would leave no margin for a single skipped
+# this. GitHub's late starts no longer eat into that margin: they run 7-35
+# minutes as a rule and reached 2-3 hours three times in 100 runs (Aug-Nov
+# 2026), but staleness is measured up to the scheduled time, so a late start
+# changes nothing. (The run of 2026-10-15 shows a 16:13Z start in
+# `gh run list`; that was a manual re-run, attempt 2 -- the scheduled attempt
+# started on time.) One day would leave no margin for a single skipped
 # collection at all.
 #
 # History, because this was disabled once and the reversal matters: Kevin's read
@@ -112,15 +114,17 @@ def get_staleness_reference_time() -> datetime:
     The moment connection staleness is measured up to.
 
     For a scheduled run this is the time the cron asked for, not the time the
-    run actually started. GitHub starts scheduled runs late -- usually by 12-21
-    minutes, once by ten hours -- and measuring up to the actual start would
-    count that CI jitter against the banks, eating the margin that keeps a
-    healthy connection from tripping `MAX_CONNECTION_STALENESS_DAYS`.
+    run actually started. GitHub starts scheduled runs late -- usually by 7-35
+    minutes, occasionally by 2-3 hours -- and measuring up to the actual start
+    would count that CI jitter against the banks, eating the margin that keeps
+    a healthy connection from tripping `MAX_CONNECTION_STALENESS_DAYS`.
 
     The workflow passes the cron expression that fired the run in the
     SCHEDULED_CRON environment variable (`github.event.schedule`), so the
     schedule has a single home in the workflow file. A manual dispatch leaves
-    it empty: such a run is not late for anything, so it measures up to now.
+    it empty, and a re-run of a scheduled run keeps it but carries a
+    GITHUB_RUN_ATTEMPT above 1. Neither is late for anything -- a re-run is
+    someone checking the connection right now -- so both measure up to now.
     """
     now = datetime.now(timezone.utc)
 
@@ -129,7 +133,26 @@ def get_staleness_reference_time() -> datetime:
     if not scheduled_cron:
         return now
 
-    return _find_latest_daily_cron_fire_time(scheduled_cron, now)
+    # Set by GitHub on every run; absent when run anywhere else.
+    run_attempt = int(config("GITHUB_RUN_ATTEMPT", default="1"))
+    if run_attempt > 1:
+        return now
+
+    scheduled_time = _find_latest_daily_cron_fire_time(scheduled_cron, now)
+    if scheduled_time is None:
+        # Measuring up to now is the stricter, pre-existing behaviour, so an
+        # unrecognised schedule can never disarm the check -- and it keeps the
+        # transactions flowing, which refusing to run would not.
+        print(
+            f"⚠️  The workflow's schedule '{scheduled_cron}' is not the daily "
+            "'<minute> <hour> * * *' shape the staleness check understands, so "
+            "staleness is measured up to now and GitHub's start delay counts "
+            "against the banks. Teach _find_latest_daily_cron_fire_time the "
+            "new shape."
+        )
+        return now
+
+    return scheduled_time
 
 
 def get_transactions(account_id: str, api_key: str) -> list[Transaction]:
@@ -388,15 +411,19 @@ def _fetch_item(item_id: str, api_key: str) -> dict:
     return _get_json_or_raise(response, f"fetching bank connection '{item_id}'")
 
 
-def _find_latest_daily_cron_fire_time(scheduled_cron: str, now: datetime) -> datetime:
+def _find_latest_daily_cron_fire_time(
+    scheduled_cron: str,
+    now: datetime,
+) -> datetime | None:
     """
-    The most recent time at or before `now` that a daily cron would have fired.
+    The most recent time at or before `now` that a daily cron would have fired,
+    or None when `scheduled_cron` is not a daily cron.
 
     Only the daily `<minute> <hour> * * *` shape is understood, because that is
-    the only shape this workflow uses. Anything else is refused loudly rather
-    than guessed at: a wrong guess would silently skew the staleness check.
-    Times are UTC, which is GitHub's cron default; the workflow sets no
-    `timezone:` on its schedule, and adding one would need handling here.
+    the only shape this workflow uses; anything else is not guessed at, since a
+    wrong guess would silently skew the staleness check. Times are UTC, which
+    is GitHub's cron default; the workflow sets no `timezone:` on its schedule,
+    and adding one would need handling here.
     """
     cron_fields = scheduled_cron.split()
     is_daily_cron = (
@@ -406,20 +433,12 @@ def _find_latest_daily_cron_fire_time(scheduled_cron: str, now: datetime) -> dat
         and cron_fields[2:] == ["*", "*", "*"]
     )
     if not is_daily_cron:
-        raise RuntimeError(
-            f"The workflow's schedule is '{scheduled_cron}', but the staleness "
-            "check only understands a daily '<minute> <hour> * * *' schedule. "
-            "Either keep the schedule daily or teach "
-            "_find_latest_daily_cron_fire_time the new shape."
-        )
+        return None
 
     minute = int(cron_fields[0])
     hour = int(cron_fields[1])
     if minute > 59 or hour > 23:
-        raise RuntimeError(
-            f"The workflow's schedule '{scheduled_cron}' names an impossible "
-            "time of day."
-        )
+        return None
 
     fire_time_today = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
     if fire_time_today <= now:
