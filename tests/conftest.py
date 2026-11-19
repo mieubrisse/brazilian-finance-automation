@@ -29,7 +29,14 @@ decouple.config = decouple.Config(decouple.RepositoryEmpty())
 # module imports the application.
 os.environ["YNAB_TOKEN"] = "fake-ynab-token"
 
-PIPELINE_SETTING_NAMES = ("PLUGGY_CLIENT_ID", "PLUGGY_CLIENT_SECRET", "LOOKBACK_DAYS")
+PIPELINE_SETTING_NAMES = (
+    "PLUGGY_CLIENT_ID",
+    "PLUGGY_CLIENT_SECRET",
+    "LOOKBACK_DAYS",
+    "SCHEDULED_CRON",
+    # Set by GitHub on every Actions run, including this suite's own CI.
+    "GITHUB_RUN_ATTEMPT",
+)
 
 
 @pytest.fixture(autouse=True)
