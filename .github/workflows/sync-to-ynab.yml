@@ -15,9 +15,8 @@ on:
     # Read back as UTC by the staleness check (see SCHEDULED_CRON below), so
     # adding a `timezone:` here needs a matching change in my_pluggy.py.
     - cron: 0 6 * * *  # Every day at 6AM
-  push:
-      branches:
-        - trunk
+  # Deliberately no push or pull_request trigger: every run writes to a real
+  # budget, so a sync runs only on the schedule above or by hand.
 jobs:
   sync:
     env: # Mimics the .env file in the root of the repository

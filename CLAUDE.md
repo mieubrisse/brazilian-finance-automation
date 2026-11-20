@@ -180,8 +180,6 @@ Gotchas
   instead. CI also runs `make test-offline`, which repeats the suite with no
   network at all. The repo is public: fixtures stay synthetic, never ids or
   transactions copied from a run log.
-- The `push` trigger in `sync-to-ynab.yml` points at a `trunk` branch that does
-  not exist, inherited from upstream.
 
 For the repo owner
 ------------------
