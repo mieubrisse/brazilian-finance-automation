@@ -36,7 +36,7 @@ TRANSACTION_PAGE_SIZE = 500
 # month. Nubank's October outage spent three of those six days on detection
 # alone -- it froze on the 12th, and the runs of the 13th (1.2 days stale) and
 # the 14th (2.2 days) both passed before the 15th caught it at 3.2 days (the
-# alarm prints whole days, so that run's log says 3). Two buys one of those
+# alarm printed whole days then, so that run's log says 3). Two buys one of those
 # days back: the run of the 14th would have failed.
 #
 # Two rather than one, because a false alarm here is worse than a late one, as
@@ -292,12 +292,24 @@ def _find_staleness_problems(
     if staleness <= timedelta(days=MAX_CONNECTION_STALENESS_DAYS):
         return []
 
+    # State the staleness the check actually tripped on, not whole days:
+    # `timedelta.days` truncates, so a 2.2-day staleness used to print "2 days
+    # ago" beside a 2-day limit and read as a miscalibrated alarm. Days are for
+    # reading at a glance; hours, set against the limit in the same unit, show
+    # it was exceeded down to a few minutes past it.
+    staleness_days = staleness / timedelta(days=1)
+    staleness_hours = staleness / timedelta(hours=1)
+    staleness_limit_hours = round(
+        timedelta(days=MAX_CONNECTION_STALENESS_DAYS) / timedelta(hours=1)
+    )
     return [
         ConnectionProblem(
             severity=ProblemSeverity.BROKEN,
             description=(
-                f"The bank connection last refreshed {staleness.days} days ago "
-                f"(at '{last_updated_at.isoformat()}'), so new transactions are "
+                f"The bank connection last refreshed {staleness_days:.1f} days "
+                f"ago ({staleness_hours:.1f} hours, past the "
+                f"{staleness_limit_hours}-hour limit) at "
+                f"'{last_updated_at.isoformat()}', so new transactions are "
                 f"not reaching Pluggy. It reports status '{item.get('status')}' "
                 f"and execution status '{item.get('executionStatus')}', which is "
                 "not a contradiction: those fields describe the last execution, "

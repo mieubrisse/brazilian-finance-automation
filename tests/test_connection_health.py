@@ -64,7 +64,44 @@ def test_connection_frozen_for_days_is_broken(pluggy):
     health = check_health()
 
     assert get_severities(health) == [ProblemSeverity.BROKEN]
-    assert "last refreshed 3 days ago" in health.problems[0].description
+    assert "last refreshed 3.0 days ago" in health.problems[0].description
+
+
+def test_staleness_alarm_states_the_staleness_it_tripped_on(pluggy):
+    # KEV-87: the alarm used to print `timedelta.days`, which truncates, so a
+    # connection 2.2 days stale read "2 days ago" beside a 2-day limit -- an
+    # alarm that appears to contradict its own threshold invites doubting it.
+    last_updated_at = ago(NOW, days=2.2)
+    pluggy.add_account(
+        ACCOUNT_ID,
+        last_updated_at=last_updated_at,
+        consent_expires_at=FAR_FUTURE_CONSENT,
+    )
+
+    health = check_health()
+
+    description = health.problems[0].description
+    assert get_severities(health) == [ProblemSeverity.BROKEN]
+    assert (
+        "last refreshed 2.2 days ago (52.8 hours, past the 48-hour limit) "
+        f"at '{last_updated_at.isoformat()}'"
+    ) in description
+    # Everything else the alarm carries stays.
+    assert "status 'UPDATED' and execution status 'SUCCESS'" in description
+    assert "not a contradiction" in description
+
+
+def test_staleness_alarm_just_past_the_limit_reads_as_past_it(pluggy):
+    # Twenty minutes over is still over; the stated figure must show it.
+    pluggy.add_account(
+        ACCOUNT_ID,
+        last_updated_at=ago(NOW, days=2, minutes=20),
+        consent_expires_at=FAR_FUTURE_CONSENT,
+    )
+
+    health = check_health()
+
+    assert "(48.3 hours, past the 48-hour limit)" in health.problems[0].description
 
 
 def test_connection_just_past_two_days_is_broken(pluggy):
