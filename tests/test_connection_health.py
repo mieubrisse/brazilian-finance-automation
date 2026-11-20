@@ -92,16 +92,16 @@ def test_staleness_alarm_states_the_staleness_it_tripped_on(pluggy):
 
 
 def test_staleness_alarm_just_past_the_limit_reads_as_past_it(pluggy):
-    # Fifteen minutes over is still over; the stated figure must show it.
+    # Twenty minutes over is still over; the stated figure must show it.
     pluggy.add_account(
         ACCOUNT_ID,
-        last_updated_at=ago(NOW, days=2, minutes=15),
+        last_updated_at=ago(NOW, days=2, minutes=20),
         consent_expires_at=FAR_FUTURE_CONSENT,
     )
 
     health = check_health()
 
-    assert "(48.2 hours, past the 48-hour limit)" in health.problems[0].description
+    assert "(48.3 hours, past the 48-hour limit)" in health.problems[0].description
 
 
 def test_connection_just_past_two_days_is_broken(pluggy):
