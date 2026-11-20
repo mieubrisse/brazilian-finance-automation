@@ -125,7 +125,8 @@ def main() -> None:
 
         print(
             f"   Connection: status '{health.status}', "
-            f"last synced {describe_timestamp(health.last_updated_at)}"
+            f"last synced {describe_timestamp(health.last_updated_at)}, "
+            f"consent expires {describe_consent_expiry(health.consent_expires_at)}"
         )
         print(
             f"✅ {result.created_count} new transactions synced "
@@ -224,6 +225,13 @@ def describe_timestamp(timestamp) -> str:
     if timestamp is None:
         return "never"
     return f"'{timestamp.isoformat()}'"
+
+def describe_consent_expiry(consent_expires_at) -> str:
+    # Not "never": a missing expiry means it cannot be read, not that the
+    # consent lasts forever.
+    if consent_expires_at is None:
+        return "at an unknown time"
+    return f"'{consent_expires_at.isoformat()}'"
 
 def report_problems_and_exit(problems_by_account_name: dict) -> None:
     """

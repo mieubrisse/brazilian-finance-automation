@@ -72,6 +72,41 @@ Two fields that *are* worth trusting, and the sync now fails on both:
 The question that discriminates hardest, though: **can the configured account ids
 still be fetched?** A 404 there is unambiguous.
 
+Two consents, one visible
+-------------------------
+
+Every Item in the Application is a **MeuPluggy** Item, and two separate
+authorizations stand behind it:
+
+- **The Meu Pluggy authorization** — the grant made from the Application to
+  your Meu Pluggy account. It lasts **one year** and is exposed on the Item as
+  `consentExpiresAt`. It is the one the sync checks, warning 14 days ahead and
+  failing once it has passed; each synced account's `Connection:` line logs it.
+  ([Meu Pluggy guide](https://docs.pluggy.ai/en/docs/guides/meu-pluggy-personal-use))
+- **The bank's Open Finance consent**, held by the bank connection *inside*
+  Meu Pluggy. **The Application cannot see it**, so nothing here checks it.
+  If a bank inside Meu Pluggy stops collecting, the first sign is the 2-day
+  staleness check, not a consent warning.
+
+So when Pluggy support says "`consentExpiresAt` is empty" or quotes a different
+id (as on 2026-10-18 — their `2531c74f…` against our `775505d2…`), check which
+layer they mean before concluding the sync is blind. That reply referred to
+the bank connection; the Application's Items carried
+`2027-03-20T06:48:42.770Z` all along, the same date support gave for the
+Meu Pluggy authorization.
+
+On the Application's Items, a null `consentExpiresAt` fails the run with a
+warning rather than passing: the only null seen so far was on Items that had
+stopped serving data (2026-09-19). An expired authorization looks like this:
+reads come back empty while the Item still shows `UPDATED` with no error, until
+the next update moves it to `LOGIN_ERROR` / `USER_AUTHORIZATION_EXPIRED`.
+
+**Renewing the authorization takes Kevin; no API call can renew it.** He repeats
+the connect flow in the dashboard with the MeuPluggy connector. The guide warns
+not to assume the data stays on the same Item afterwards: if the configured
+account ids stop resolving, update the `ACCOUNT_<n>_PLUGGY_ID` secrets and treat
+`import_id` duplicate protection as gone (see the duplicates section).
+
 Diagnosing
 ----------
 

@@ -60,10 +60,28 @@ TRANSACTION_PAGE_SIZE = 500
 # outage within days of it starting instead of ten weeks later.
 MAX_CONNECTION_STALENESS_DAYS = 2
 
-# Open Finance consents expire, and when one does the connection goes dark
+# The connection's consent expires, and when it does the connection goes dark
 # silently. Warn while there is still time to renew it, but keep the window
 # short so the warning stays urgent instead of becoming background noise.
+#
+# For the MeuPluggy items this pipeline reads, the item's `consentExpiresAt` is
+# the Meu Pluggy authorization -- the one-year grant every MeuPluggy item reads
+# through -- not the Open Finance consent of the bank connection inside Meu
+# Pluggy, which this application cannot see at all. See "Two consents, one
+# visible" in CLAUDE.md.
+#   https://docs.pluggy.ai/en/docs/guides/meu-pluggy-personal-use
 CONSENT_EXPIRY_WARNING_DAYS = 14
+
+# Per the Meu Pluggy guide above: no API call or automatic sync can renew the
+# authorization, and the item it lands on afterwards may not be the old one.
+CONSENT_RENEWAL_INSTRUCTIONS = (
+    "Renewing takes a person: at https://dashboard.pluggy.ai open Applications "
+    "-> this application -> Demo -> Connect Account, choose MeuPluggy (not the "
+    "bank) and sign in. Afterwards check whether the configured account ids "
+    "still resolve; if the data moved to a new item, update the matching "
+    "ACCOUNT_<n>_PLUGGY_ID repository secrets and treat import_id duplicate "
+    "protection as gone (see CLAUDE.md)."
+)
 
 
 def get_api_key(client_id: str, client_secret: str) -> str:
@@ -349,9 +367,26 @@ def _find_consent_problems(
     consent_expires_at: datetime | None,
     now: datetime,
 ) -> list[ConnectionProblem]:
-    # Connectors that don't go through Open Finance have no consent to expire.
+    # Not "nothing to check". Every connection here is a MeuPluggy item, and the
+    # Meu Pluggy authorization always expires, a year after it is granted. A
+    # null therefore means the expiry has become unreadable, which would leave
+    # this check silently disarmed -- so say so. The only null seen on these
+    # items so far was on 2026-09-19, mid-outage, on items holding no accounts.
     if consent_expires_at is None:
-        return []
+        return [
+            ConnectionProblem(
+                severity=ProblemSeverity.WARNING,
+                description=(
+                    "Pluggy reports no consent expiry for this connection, so "
+                    "nothing can warn before its Meu Pluggy authorization "
+                    "lapses. A MeuPluggy connection's authorization always "
+                    "expires, a year after it was granted, and the date is "
+                    "normally on the connection as 'consentExpiresAt'. Check "
+                    "the connection in the Pluggy dashboard, and see 'Two "
+                    "consents, one visible' in this repo's CLAUDE.md."
+                ),
+            )
+        ]
 
     time_until_expiry = consent_expires_at - now
 
@@ -360,10 +395,10 @@ def _find_consent_problems(
             ConnectionProblem(
                 severity=ProblemSeverity.BROKEN,
                 description=(
-                    "The Open Finance consent expired at "
-                    f"'{consent_expires_at.isoformat()}'. The bank must be "
-                    "reconnected in the Pluggy dashboard before any "
-                    "transactions can sync again."
+                    "The consent behind this connection -- its Meu Pluggy "
+                    f"authorization -- expired at '{consent_expires_at.isoformat()}', "
+                    "so Pluggy now returns no data for it. "
+                    f"{CONSENT_RENEWAL_INSTRUCTIONS}"
                 ),
             )
         ]
@@ -373,11 +408,11 @@ def _find_consent_problems(
             ConnectionProblem(
                 severity=ProblemSeverity.WARNING,
                 description=(
-                    f"The Open Finance consent expires in "
-                    f"{time_until_expiry.days} days (at "
-                    f"'{consent_expires_at.isoformat()}'). Renew it in the "
-                    "Pluggy dashboard before it lapses, or the sync will go "
-                    "silent."
+                    "The consent behind this connection -- its Meu Pluggy "
+                    f"authorization -- expires in {time_until_expiry.days} days "
+                    f"(at '{consent_expires_at.isoformat()}'), and then the "
+                    "sync goes silent. Renew it before then. "
+                    f"{CONSENT_RENEWAL_INSTRUCTIONS}"
                 ),
             )
         ]

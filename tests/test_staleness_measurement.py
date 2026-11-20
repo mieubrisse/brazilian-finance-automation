@@ -206,7 +206,7 @@ def test_consent_expiry_is_judged_against_the_real_clock(run_sync):
     )
 
     assert exit_code == 1
-    assert "The Open Finance consent expired" in output
+    assert "Meu Pluggy authorization -- expired" in output
 
 
 def test_unrecognised_schedule_falls_back_to_now_and_still_syncs(run_sync):
