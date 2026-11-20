@@ -146,6 +146,45 @@ def test_consent_about_to_expire_fails_the_run(
     assert "[WARNING]" in output
 
 
+def test_unreadable_consent_expiry_fails_the_run(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    # The silent case KEV-94 found: with no expiry to read, the consent check
+    # would otherwise pass every day right up to the lapse.
+    configure_account(monkeypatch, 0, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, hours=10),
+        consent_expires_at=None,
+    )
+
+    exit_code = run_sync()
+
+    output = capsys.readouterr().out
+    assert exit_code == 1
+    assert "consent expires at an unknown time" in output
+    assert "[WARNING] Pluggy reports no consent expiry" in output
+
+
+def test_log_shows_when_the_consent_expires(
+    monkeypatch, capsys, pluggy, ynab_create_transaction
+):
+    # A diagnosing agent reads the run log; the deadline belongs in it.
+    configure_account(monkeypatch, 0, "Fake Checking", CHECKING_ACCOUNT_ID)
+    pluggy.add_account(
+        CHECKING_ACCOUNT_ID,
+        last_updated_at=ago(NOW, hours=10),
+        consent_expires_at=FAR_FUTURE_CONSENT,
+    )
+
+    run_sync()
+
+    assert (
+        f"consent expires '{FAR_FUTURE_CONSENT.isoformat()}'"
+        in capsys.readouterr().out
+    )
+
+
 def test_deleted_account_fails_the_run_without_hiding_the_others(
     monkeypatch, capsys, pluggy, ynab_create_transaction
 ):

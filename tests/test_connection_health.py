@@ -132,7 +132,7 @@ def test_expired_consent_is_broken(pluggy):
     health = check_health()
 
     assert get_severities(health) == [ProblemSeverity.BROKEN]
-    assert "consent expired" in health.problems[0].description
+    assert "Meu Pluggy authorization -- expired" in health.problems[0].description
 
 
 def test_consent_expiring_within_two_weeks_is_a_warning(pluggy):
@@ -148,8 +148,10 @@ def test_consent_expiring_within_two_weeks_is_a_warning(pluggy):
     assert not health.is_healthy
 
 
-def test_connection_without_consent_is_healthy(pluggy):
-    # Connectors outside Open Finance have no consent to expire.
+def test_connection_with_no_consent_expiry_is_a_warning(pluggy):
+    # Every connection here is a MeuPluggy item, whose authorization always
+    # expires. A null expiry means the check cannot see the deadline, not that
+    # there is none (KEV-94), so it must not pass silently.
     pluggy.add_account(
         ACCOUNT_ID,
         last_updated_at=ago(NOW, hours=10),
@@ -158,7 +160,54 @@ def test_connection_without_consent_is_healthy(pluggy):
 
     health = check_health()
 
-    assert health.is_healthy
+    assert get_severities(health) == [ProblemSeverity.WARNING]
+    assert "no consent expiry" in health.problems[0].description
+
+
+# The shape production reports (KEV-94): both MeuPluggy items carried this
+# exact consentExpiresAt in the diagnose runs of 2026-09-28 and 2026-10-23 --
+# the Meu Pluggy authorization Pluggy support dated 20/03/2027. The sync is
+# scheduled for 06:00Z.
+MEU_PLUGGY_AUTHORIZATION_EXPIRY = datetime(
+    2027, 3, 20, 6, 48, 42, tzinfo=timezone.utc
+)
+
+
+@pytest.mark.parametrize(
+    ("scheduled_run_time", "expected_severities"),
+    [
+        # 14 days and 48 minutes out: just outside the warning window.
+        (datetime(2027, 3, 6, 6, 0, tzinfo=timezone.utc), []),
+        # The first scheduled run to warn, 13 days ahead.
+        (
+            datetime(2027, 3, 7, 6, 0, tzinfo=timezone.utc),
+            [ProblemSeverity.WARNING],
+        ),
+        # The run after the authorization lapses.
+        (
+            datetime(2027, 3, 21, 6, 0, tzinfo=timezone.utc),
+            [ProblemSeverity.BROKEN],
+        ),
+    ],
+    ids=["2027-03-06-quiet", "2027-03-07-warns", "2027-03-21-broken"],
+)
+def test_meu_pluggy_authorization_expiry_fires_on_schedule(
+    pluggy, scheduled_run_time, expected_severities
+):
+    pluggy.add_account(
+        ACCOUNT_ID,
+        last_updated_at=ago(scheduled_run_time, hours=5),
+        consent_expires_at=MEU_PLUGGY_AUTHORIZATION_EXPIRY,
+    )
+
+    with freeze_time(scheduled_run_time):
+        health = check_connection_health(
+            account_id=ACCOUNT_ID,
+            api_key=FAKE_PLUGGY_API_KEY,
+            staleness_reference_time=scheduled_run_time,
+        )
+
+    assert get_severities(health) == expected_severities
 
 
 def test_account_id_that_no_longer_resolves_fails_loudly(pluggy):
