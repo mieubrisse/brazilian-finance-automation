@@ -61,3 +61,19 @@ jobs:
       - run: uv run python --version
       - name: Run sync to YNAB
         run: make run
+      # Tells healthchecks.io how the run ended, so a failure or a missing run
+      # alerts through healthchecks.io rather than GitHub's notifications. It
+      # runs whatever happened above (`always()`), pinging /fail unless the job
+      # succeeded, and can never change the job's result: the script always
+      # exits 0, and `continue-on-error` covers anything it cannot catch. It
+      # uses the runner's own python3 so it still reports when uv's setup is
+      # what failed. The key is scoped to this step only.
+      - name: Report the run to healthchecks.io
+        if: always()
+        continue-on-error: true
+        timeout-minutes: 2
+        env:
+          HEALTHCHECKS_PING_KEY: ${{ secrets.HEALTHCHECKS_PING_KEY }}
+          HEALTHCHECKS_SLUG: brazilian-finance-sync
+          JOB_STATUS: ${{ job.status }}
+        run: python3 financas_automatizadas/healthchecks_ping.py
